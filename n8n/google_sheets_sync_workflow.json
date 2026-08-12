@@ -1,0 +1,75 @@
+{
+  "name": "Pipeline - Live Google Sheets Sync",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "name": "Schedule Trigger (15m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT j.title, j.company, j.location, j.is_remote, ja.status, ja.date_applied FROM job_applications ja JOIN jobs j ON ja.job_id = j.id ORDER BY ja.created_at DESC;"
+      },
+      "name": "Query Supabase Applications",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "sheetName": "Jobs Pipeline",
+        "options": {}
+      },
+      "name": "Google Sheets Node",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        650,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (15m)": {
+      "main": [
+        [
+          {
+            "node": "Query Supabase Applications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Supabase Applications": {
+      "main": [
+        [
+          {
+            "node": "Google Sheets Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}
