@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Autonomous Pipeline Dashboard - DevOps & Scholarships</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card-bg: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --text-heading: #f0f6fc;
+      --primary: #238636;
+      --primary-hover: #2ea043;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --orange: #d29922;
+      --red: #f85149;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background-color: var(--bg); color: var(--text); padding: 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; border-bottom: 1px solid var(--border); padding-bottom: 16px; }
+    h1 { color: var(--text-heading); font-size: 22px; }
+    .nav-tabs { display: flex; gap: 12px; margin-bottom: 24px; }
+    .tab-btn { background: var(--card-bg); border: 1px solid var(--border); color: var(--text); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .tab-btn.active { background: var(--blue); color: #fff; border-color: var(--blue); }
+    
+    /* Stats Row */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .stat-card { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; border-radius: 8px; }
+    .stat-value { font-size: 24px; font-weight: bold; color: var(--text-heading); margin-top: 4px; }
+    
+    /* Kanban Board */
+    .kanban-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; align-items: start; }
+    @media (max-width: 900px) { .kanban-board { grid-template-columns: 1fr; } }
+    .kanban-col { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .col-header { font-size: 14px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; display: flex; justify-content: space-between; }
+    .job-card { background: var(--bg); border: 1px solid var(--border); padding: 12px; border-radius: 6px; margin-bottom: 12px; }
+    .job-card h4 { color: var(--text-heading); margin-bottom: 4px; font-size: 15px; }
+    .job-company { color: var(--blue); font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+    .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .tag { background: #21262d; border: 1px solid var(--border); font-size: 11px; padding: 2px 6px; border-radius: 4px; color: var(--text); }
+    .action-btn { background: var(--primary); color: #fff; border: none; padding: 4px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; margin-top: 8px; }
+    .action-btn:hover { background: var(--primary-hover); }
+
+    /* Tables */
+    .table-container { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 14px; }
+    th, td { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    th { background: #21262d; color: var(--text-heading); font-weight: 600; }
+    .badge { padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: 500; display: inline-block; }
+    .badge-success { background: rgba(46, 160, 67, 0.15); color: #3fb950; border: 1px solid rgba(46, 160, 67, 0.4); }
+    .badge-info { background: rgba(88, 166, 255, 0.15); color: #58a6ff; border: 1px solid rgba(88, 166, 255, 0.4); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div>
+      <h1>🚀 Career & Scholarship Pipeline Dashboard</h1>
+      <p style="font-size: 13px; color: #8b949e; margin-top: 4px;">DevOps / Cloud Applications + International MSc Tracker</p>
+    </div>
+    <button class="tab-btn" onclick="refreshData()">🔄 Refresh Data</button>
+  </header>
+
+  <!-- Stats Bar -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div style="font-size: 12px; color: #8b949e;">Sourced Jobs</div>
+      <div class="stat-value" id="stat-jobs">0</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size: 12px; color: #8b949e;">Applications Sent</div>
+      <div class="stat-value" id="stat-applied">0</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size: 12px; color: #8b949e;">Active Interviews</div>
+      <div class="stat-value" id="stat-interviews">0</div>
+    </div>
+    <div class="stat-card">
+      <div style="font-size: 12px; color: #8b949e;">MSc Programmes</div>
+      <div class="stat-value" id="stat-schools">0</div>
+    </div>
+  </div>
+
+  <!-- Navigation Tabs -->
+  <div class="nav-tabs">
+    <button class="tab-btn active" onclick="showTab('kanban')">💼 Jobs Kanban Board</button>
+    <button class="tab-btn" onclick="showTab('schools')">🎓 MSc & Scholarships</button>
+    <button class="tab-btn" onclick="showTab('outreach')">📧 Cold Email Outreach</button>
+  </div>
+
+  <!-- Tab 1: Jobs Kanban -->
+  <div id="tab-kanban" class="kanban-board">
+    <div class="kanban-col">
+      <div class="col-header"><span>Sourced / Planning</span><span id="count-planning">0</span></div>
+      <div id="col-planning"></div>
+    </div>
+    <div class="kanban-col">
+      <div class="col-header"><span>Applied</span><span id="count-applied">0</span></div>
+      <div id="col-applied"></div>
+    </div>
+    <div class="kanban-col">
+      <div class="col-header"><span>Interviewing</span><span id="count-interview">0</span></div>
+      <div id="col-interview"></div>
+    </div>
+    <div class="kanban-col">
+      <div class="col-header"><span>Offers / Closed</span><span id="count-offer">0</span></div>
+      <div id="col-offer"></div>
+    </div>
+  </div>
+
+  <!-- Tab 2: Schools & Scholarships -->
+  <div id="tab-schools" class="table-container" style="display: none;">
+    <table>
+      <thead>
+        <tr>
+          <th>Programme / University</th>
+          <th>Country</th>
+          <th>Field</th>
+          <th>Funding</th>
+          <th>Action Link</th>
+        </tr>
+      </thead>
+      <tbody id="schools-table-body">
+        <tr><td colspan="5" style="text-align: center; color: #8b949e;">Loading programmes...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Tab 3: Cold Email Outreach -->
+  <div id="tab-outreach" class="table-container" style="display: none;">
+    <table>
+      <thead>
+        <tr>
+          <th>Company / Recruiter</th>
+          <th>Channel</th>
+          <th>Subject</th>
+          <th>Status</th>
+          <th>Scheduled Send</th>
+        </tr>
+      </thead>
+      <tbody id="outreach-table-body">
+        <tr><td colspan="5" style="text-align: center; color: #8b949e;">Loading outreach history...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // Supabase Configuration Placeholder
+    const SUPABASE_URL = "https://YOUR_SUPABASE_PROJECT_ID.supabase.co";
+    const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY";
+    
+    let supabaseClient = null;
+    if (SUPABASE_URL.includes("supabase.co")) {
+      supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    }
+
+    function showTab(tabName) {
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+      event.target.classList.add('active');
+
+      document.getElementById('tab-kanban').style.display = tabName === 'kanban' ? 'grid' : 'none';
+      document.getElementById('tab-schools').style.display = tabName === 'schools' ? 'block' : 'none';
+      document.getElementById('tab-outreach').style.display = tabName === 'outreach' ? 'block' : 'none';
+    }
+
+    async function refreshData() {
+      if (!supabaseClient) return;
+
+      // Fetch Jobs
+      const { data: jobs } = await supabaseClient.from('jobs').select('*').order('created_at', { ascending: false });
+      if (jobs) renderKanban(jobs);
+
+      // Fetch Schools
+      const { data: programmes } = await supabaseClient.from('programmes').select('*');
+      if (programmes) renderSchools(programmes);
+
+      // Fetch Outreach
+      const { data: outreach } = await supabaseClient.from('email_outreach').select('*, contacts(name, company)');
+      if (outreach) renderOutreach(outreach);
+    }
+
+    function renderKanban(jobs) {
+      document.getElementById('stat-jobs').innerText = jobs.length;
+      document.getElementById('col-planning').innerHTML = '';
+      document.getElementById('col-applied').innerHTML = '';
+      document.getElementById('col-interview').innerHTML = '';
+      document.getElementById('col-offer').innerHTML = '';
+
+      jobs.forEach(job => {
+        const card = document.createElement('div');
+        card.className = 'job-card';
+        card.innerHTML = `
+          <h4>${job.title}</h4>
+          <div class="job-company">${job.company} • ${job.location}</div>
+          <div class="tags">${(job.tech_stack_tags || []).map(t => `<span class="tag">${t}</span>`).join('')}</div>
+          <a href="${job.job_url}" target="_blank" style="color: var(--blue); font-size: 12px; margin-top: 8px; display: inline-block;">View Job →</a>
+        `;
+
+        if (job.status === 'open' || job.status === 'planning') document.getElementById('col-planning').appendChild(card);
+        else if (job.status === 'applied') document.getElementById('col-applied').appendChild(card);
+        else if (job.status === 'interview') document.getElementById('col-interview').appendChild(card);
+        else document.getElementById('col-offer').appendChild(card);
+      });
+    }
+
+    function renderSchools(programmes) {
+      document.getElementById('stat-schools').innerText = programmes.length;
+      const tbody = document.getElementById('schools-table-body');
+      tbody.innerHTML = programmes.map(p => `
+        <tr>
+          <td><strong>${p.name}</strong><br><span style="color:#8b949e; font-size:12px;">${p.university}</span></td>
+          <td>${p.country}</td>
+          <td>${p.field}</td>
+          <td><span class="badge ${p.is_fully_funded ? 'badge-success' : 'badge-info'}">${p.is_fully_funded ? 'Fully Funded' : p.tuition_fee || 'Tuition Applies'}</span></td>
+          <td><a href="${p.main_link}" target="_blank" style="color: var(--blue);">Apply Portal ↗</a></td>
+        </tr>
+      `).join('');
+    }
+
+    function renderOutreach(outreachList) {
+      const tbody = document.getElementById('outreach-table-body');
+      tbody.innerHTML = outreachList.map(o => `
+        <tr>
+          <td><strong>${o.contacts?.company || 'Company'}</strong><br><span style="color:#8b949e; font-size:12px;">${o.contacts?.name || ''}</span></td>
+          <td><span class="tag">${o.channel}</span></td>
+          <td>${o.subject || 'DevOps Outreach'}</td>
+          <td><span class="badge badge-info">${o.status}</span></td>
+          <td>${new Date(o.send_at).toLocaleDateString()}</td>
+        </tr>
+      `).join('');
+    }
+
+    refreshData();
+  </script>
+</body>
+</html>

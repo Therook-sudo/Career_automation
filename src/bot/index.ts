@@ -1,7 +1,14 @@
-import { Telegraf, Markup } from 'telegraf';
+import { Telegraf } from 'telegraf';
 import dotenv from 'dotenv';
 import { supabase } from '../lib/supabase';
 import { runJobSourcingPipeline } from '../services/jobFetcher';
+import { tailorResumeForJob } from '../services/aiTailor';
+import { findOrProposeContact } from '../services/leadFinder';
+import { scheduleOutreachEmail } from '../services/emailOutreach';
+import { runScholarshipSourcingPipeline } from '../services/scholarshipFetcher';
+import { generateScholarshipChecklist } from '../services/checklistGenerator';
+import { generateSopForProgramme } from '../services/sopGenerator';
+import { computeWeeklyMetrics } from '../services/metricsEngine';
 
 dotenv.config();
 
@@ -30,10 +37,13 @@ bot.start((ctx) => {
     `📌 *Quick Commands*:\n` +
     `• /dashboard - View pipeline overview & stats\n` +
     `• /jobs - Browse latest sourced DevOps/Cloud jobs\n` +
-    `• /fetch_jobs - Trigger manual job sourcing sweep\n` +
-    `• /schools - View upcoming MSc programmes & scholarships\n` +
+    `• /apply <job_id> - Tailor CV for a specific job\n` +
+    `• /outreach <job_id> - Draft & schedule cold email sequence\n` +
+    `• /schools - View upcoming MSc programmes\n` +
+    `• /scholarships - View fully-funded scholarships\n` +
+    `• /checklist <school_id> - Generate AI application checklist\n` +
+    `• /sop <school_id> - Generate Statement of Purpose (SOP)\n` +
     `• /tasks - View tasks due today & overdue items\n` +
-    `• /resume - Upload or view your base CV profile\n` +
     `• /help - Full command list`,
     { parse_mode: 'Markdown' }
   );
@@ -48,16 +58,18 @@ bot.help((ctx) => {
     `• /jobs_remote - Show remote-only job listings\n` +
     `• /fetch_jobs - Run automated job scrapers now\n` +
     `• /apply <job_id> - Tailor CV & create application record\n` +
-    `• /outreach_pending - Show cold emails/DMs waiting for review\n\n` +
+    `• /outreach <job_id> - Discover recruiter & schedule email\n` +
+    `• /outreach_pending - Show cold emails waiting to send\n\n` +
     `*System B – Scholarship & School Tracker*:\n` +
-    `• /schools - Show upcoming MSc programmes & deadlines\n` +
+    `• /schools - Show upcoming MSc programmes\n` +
     `• /scholarships - Show fully-funded scholarships\n` +
-    `• /sop_draft <school_id> - Generate AI Statement of Purpose\n\n` +
+    `• /fetch_schools - Run school sourcing sweep\n` +
+    `• /checklist <school_id> - Generate AI task checklist\n` +
+    `• /sop <school_id> - Generate Statement of Purpose (SOP)\n\n` +
     `*Unified Tools*:\n` +
     `• /dashboard - Live 7-day pipeline summary\n` +
     `• /tasks - Daily tasks & deadline checklist\n` +
-    `• /resume - Send text/file to update your base profile\n` +
-    `• /report - Weekly AI synthesis digest`,
+    `• /resume - View or update your base CV profile`,
     { parse_mode: 'Markdown' }
   );
 });
@@ -68,7 +80,7 @@ bot.command('fetch_jobs', async (ctx) => {
   try {
     const stats = await runJobSourcingPipeline();
     ctx.reply(
-      `✅ *Sourcing Sweep Complete*\n` +
+      `✅ *Job Sourcing Complete*\n` +
       `• Matching Jobs Sourced: *${stats.totalFetched}*\n` +
       `• Database Updates/Upserts: *${stats.upserted}*\n\n` +
       `Use /jobs to list the latest items!`,
@@ -77,6 +89,24 @@ bot.command('fetch_jobs', async (ctx) => {
   } catch (error: any) {
     console.error('Job fetch command error:', error);
     ctx.reply('⚠️ Failed to complete job sourcing sweep.');
+  }
+});
+
+// /fetch_schools command
+bot.command('fetch_schools', async (ctx) => {
+  ctx.reply('🔍 *Running School & Scholarship Sourcing Sweep...*', { parse_mode: 'Markdown' });
+  try {
+    const stats = await runScholarshipSourcingPipeline();
+    ctx.reply(
+      `✅ *School Sourcing Complete*\n` +
+      `• MSc Programmes Stored: *${stats.programmesCount}*\n` +
+      `• Fully-Funded Scholarships: *${stats.scholarshipsCount}*\n\n` +
+      `Use /schools or /scholarships to list opportunities!`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (error: any) {
+    console.error('School fetch command error:', error);
+    ctx.reply('⚠️ Failed to complete school sourcing sweep.');
   }
 });
 
@@ -141,35 +171,64 @@ bot.command('jobs', async (ctx) => {
   }
 });
 
-// /jobs_remote command
-bot.command('jobs_remote', async (ctx) => {
+// /apply <job_id> command
+bot.command('apply', async (ctx) => {
+  const parts = ctx.message.text.split(' ');
+  const jobId = parts[1]?.trim();
+
+  if (!jobId) {
+    return ctx.reply('⚠️ Usage: `/apply <job_id>`', { parse_mode: 'Markdown' });
+  }
+
+  ctx.reply(`🧠 *Tailoring Resume with Gemini AI for Job ID:* \`${jobId}\`...`, { parse_mode: 'Markdown' });
+
   try {
-    const { data: jobs, error } = await supabase
-      .from('jobs')
-      .select('*')
-      .eq('status', 'open')
-      .eq('is_remote', true)
-      .order('created_at', { ascending: false })
-      .limit(5);
+    const tailored = await tailorResumeForJob(jobId);
+    if (!tailored) return ctx.reply('⚠️ Failed to generate tailored resume.');
 
-    if (error) throw error;
+    let message = `✅ *Resume Tailored Successfully!*\n\n`;
+    message += `📝 *Summary Profile*:\n${tailored.tailored_summary}\n\n`;
+    message += `🔑 *Matched Keywords*:\n\`${tailored.tailored_keywords.join(', ')}\`\n\n`;
+    message += `🎯 *Key Custom Bullet Points*:\n`;
+    tailored.custom_bullets.forEach((b) => { message += `• ${b}\n`; });
+    message += `\n💡 _Use /outreach ${jobId} to draft cold outreach._`;
 
-    if (!jobs || jobs.length === 0) {
-      return ctx.reply('📭 No remote jobs found. Use /fetch_jobs to run the scrapers!');
-    }
-
-    let message = `🌐 *Remote-Only DevOps Roles*\n\n`;
-    jobs.forEach((job, idx) => {
-      message += `${idx + 1}. *${job.title}* @ ${job.company}\n`;
-      message += `🏷 Stack: ${job.tech_stack_tags ? job.tech_stack_tags.join(', ') : 'DevOps'}\n`;
-      message += `🆔 ID: \`${job.id}\`\n`;
-      message += `🔗 [Apply Link](${job.job_url})\n\n`;
-    });
-
-    ctx.reply(message, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
+    ctx.reply(message, { parse_mode: 'Markdown' });
   } catch (error: any) {
-    console.error('Error fetching remote jobs:', error);
-    ctx.reply('⚠️ Failed to query jobs table.');
+    console.error('Apply command error:', error);
+    ctx.reply(`⚠️ Error tailoring resume: ${error.message}`);
+  }
+});
+
+// /outreach <job_id> command
+bot.command('outreach', async (ctx) => {
+  const parts = ctx.message.text.split(' ');
+  const jobId = parts[1]?.trim();
+
+  if (!jobId) {
+    return ctx.reply('⚠️ Usage: `/outreach <job_id>`', { parse_mode: 'Markdown' });
+  }
+
+  ctx.reply(`🔍 *Finding Hiring Contact & Drafting Email for Job:* \`${jobId}\`...`, { parse_mode: 'Markdown' });
+
+  try {
+    const { data: job } = await supabase.from('jobs').select('company').eq('id', jobId).single();
+    const company = job?.company || 'Target Company';
+
+    const contact = await findOrProposeContact(company);
+    const outreach = await scheduleOutreachEmail(jobId, contact.id, 1, 0);
+
+    let message = `📧 *Cold Email Drafted & Scheduled!*\n\n`;
+    message += `👤 *Contact*: ${contact.name} (${contact.role_title})\n`;
+    message += `📬 *Email*: \`${contact.email}\`\n\n`;
+    message += `📌 *Subject*: ${outreach.subject}\n\n`;
+    message += `📜 *Body*:\n${outreach.body}\n\n`;
+    message += `✅ *Scheduled for Send*: ${new Date(outreach.send_at).toLocaleDateString()}`;
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Outreach command error:', error);
+    ctx.reply(`⚠️ Error generating outreach: ${error.message}`);
   }
 });
 
@@ -185,14 +244,15 @@ bot.command('schools', async (ctx) => {
     if (error) throw error;
 
     if (!programmes || programmes.length === 0) {
-      return ctx.reply('📭 No MSc programmes stored in database yet.');
+      return ctx.reply('📭 No MSc programmes stored in database yet. Use /fetch_schools to load opportunities!');
     }
 
-    let message = `🎓 *Masters Programmes & Scholarships*\n\n`;
+    let message = `🎓 *MSc Programmes Tracked*\n\n`;
     programmes.forEach((prog, idx) => {
       message += `${idx + 1}. *${prog.name}*\n`;
       message += `🏛 ${prog.university} (${prog.country})\n`;
-      message += `💰 Funding: ${prog.is_fully_funded ? 'Fully Funded' : prog.tuition_fee || 'Tuition Fee Applies'}\n`;
+      message += `💰 Funding: ${prog.is_fully_funded ? 'Fully Funded' : prog.tuition_fee || 'Tuition Applies'}\n`;
+      message += `🆔 ID: \`${prog.id}\`\n`;
       message += `🔗 [Programme Link](${prog.main_link})\n\n`;
     });
 
@@ -203,13 +263,151 @@ bot.command('schools', async (ctx) => {
   }
 });
 
-// Start bot & background sourcing scheduler (Every 6 hours)
+// /scholarships command
+bot.command('scholarships', async (ctx) => {
+  try {
+    const { data: scholarships, error } = await supabase
+      .from('scholarships')
+      .select('*')
+      .order('deadline', { ascending: true })
+      .limit(5);
+
+    if (error) throw error;
+
+    if (!scholarships || scholarships.length === 0) {
+      return ctx.reply('📭 No scholarships found in database yet. Use /fetch_schools to populate!');
+    }
+
+    let message = `🏆 *Fully-Funded Scholarships*\n\n`;
+    scholarships.forEach((schol, idx) => {
+      message += `${idx + 1}. *${schol.name}*\n`;
+      message += `🏛 Provider: ${schol.provider} (${schol.country})\n`;
+      message += `💰 Coverage: ${schol.coverage}\n`;
+      message += `📅 Deadline: ${schol.deadline ? new Date(schol.deadline).toLocaleDateString() : 'Rolling'}\n`;
+      message += `🆔 ID: \`${schol.id}\`\n\n`;
+    });
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Error fetching scholarships:', error);
+    ctx.reply('⚠️ Failed to query scholarships table.');
+  }
+});
+
+// /checklist <school_id> command
+bot.command('checklist', async (ctx) => {
+  const parts = ctx.message.text.split(' ');
+  const schoolId = parts[1]?.trim();
+
+  if (!schoolId) {
+    return ctx.reply('⚠️ Usage: `/checklist <school_id>`', { parse_mode: 'Markdown' });
+  }
+
+  ctx.reply(`🧠 *Generating AI Application Checklist for School ID:* \`${schoolId}\`...`, { parse_mode: 'Markdown' });
+
+  try {
+    const tasks = await generateScholarshipChecklist(schoolId);
+
+    let message = `📋 *Application Tasks Checklist Generated!*\n\n`;
+    tasks.forEach((t, idx) => {
+      message += `${idx + 1}. [${t.priority.toUpperCase()}] ${t.description}\n`;
+      message += `   📅 Due: ${new Date(t.due_date).toLocaleDateString()}\n\n`;
+    });
+
+    message += `💡 _Tasks saved to database! Use /tasks to view your active schedule._`;
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Checklist command error:', error);
+    ctx.reply(`⚠️ Error generating checklist: ${error.message}`);
+  }
+});
+
+// /sop <school_id> command
+bot.command('sop', async (ctx) => {
+  const parts = ctx.message.text.split(' ');
+  const schoolId = parts[1]?.trim();
+
+  if (!schoolId) {
+    return ctx.reply('⚠️ Usage: `/sop <school_id>`', { parse_mode: 'Markdown' });
+  }
+
+  ctx.reply(`✍️ *Generating Tailored Statement of Purpose (SOP) for School ID:* \`${schoolId}\`...`, { parse_mode: 'Markdown' });
+
+  try {
+    const sopDraft = await generateSopForProgramme(schoolId);
+
+    let message = `📜 *Statement of Purpose (SOP) Draft Created!*\n\n`;
+    message += `${sopDraft.substring(0, 800)}...\n\n`;
+    message += `💡 _Full SOP saved to database under scholarship_applications record._`;
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('SOP command error:', error);
+    ctx.reply(`⚠️ Error generating SOP: ${error.message}`);
+  }
+});
+
+// /tasks command
+bot.command('tasks', async (ctx) => {
+  try {
+    const { data: tasks, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .eq('status', 'pending')
+      .order('due_date', { ascending: true })
+      .limit(5);
+
+    if (error) throw error;
+
+    if (!tasks || tasks.length === 0) {
+      return ctx.reply('🎉 No pending tasks due! You are all caught up.');
+    }
+
+    let message = `📅 *Active Application Tasks*\n\n`;
+    tasks.forEach((task, idx) => {
+      message += `${idx + 1}. [${task.priority.toUpperCase()}] ${task.description}\n`;
+      message += `   📅 Due Date: ${new Date(task.due_date).toLocaleDateString()}\n\n`;
+    });
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Tasks command error:', error);
+    ctx.reply('⚠️ Failed to query tasks.');
+  }
+});
+
+// /report command - Weekly AI Performance Synthesis
+bot.command('report', async (ctx) => {
+  ctx.reply('📊 *Computing 7-Day Performance Metrics & AI Synthesis Digest...*', { parse_mode: 'Markdown' });
+  try {
+    const report = await computeWeeklyMetrics();
+
+    let message = `🤖 *Weekly Performance & AI Synthesis Digest*\n`;
+    message += `📅 *Period*: ${report.weekStart} to ${report.weekEnd}\n\n`;
+    message += `📈 *Key Activity Metrics*:\n`;
+    message += `• Sourced Jobs: *${report.sourcedJobsCount}*\n`;
+    message += `• Applications Submitted: *${report.applicationsSentCount}*\n`;
+    message += `• Recruiter Cold Emails Sent: *${report.outreachSentCount}*\n`;
+    message += `• Cold Email Reply Rate: *${report.emailReplyRate}%*\n`;
+    message += `• Active Interviews: *${report.interviewsCount}*\n\n`;
+    message += `💡 *AI Insights & Strategic Synthesis*:\n`;
+    message += `${report.aiInsightsSummary}`;
+
+    ctx.reply(message, { parse_mode: 'Markdown' });
+  } catch (error: any) {
+    console.error('Report command error:', error);
+    ctx.reply('⚠️ Error computing weekly performance report.');
+  }
+});
+
+// Start bot & background sourcing schedulers
 bot.launch().then(() => {
   console.log('🤖 Telegram Bot successfully launched & connected to Supabase!');
 
-  // Run initial job fetch after startup (delayed 5s)
+  // Run initial sourcing sweeps after startup
   setTimeout(() => {
     runJobSourcingPipeline().catch((err) => console.error('Initial job fetch error:', err));
+    runScholarshipSourcingPipeline().catch((err) => console.error('Initial school fetch error:', err));
   }, 5000);
 
   // Periodic 6-hour job sourcing trigger
@@ -223,4 +421,3 @@ bot.launch().then(() => {
 // Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
-
