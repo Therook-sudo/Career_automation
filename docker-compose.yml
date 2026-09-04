@@ -25,5 +25,14 @@ services:
     depends_on:
       - n8n
 
+  web_dashboard:
+    image: nginx:alpine
+    container_name: pipeline_dashboard
+    restart: always
+    ports:
+      - "8080:80"
+    volumes:
+      - ./dashboard:/usr/share/nginx/html:ro
+
 volumes:
   n8n_data:

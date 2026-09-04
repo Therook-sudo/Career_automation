@@ -14,6 +14,10 @@ const scholarshipFetcher_1 = require("../services/scholarshipFetcher");
 const checklistGenerator_1 = require("../services/checklistGenerator");
 const sopGenerator_1 = require("../services/sopGenerator");
 const metricsEngine_1 = require("../services/metricsEngine");
+const jobEvaluator_1 = require("../services/jobEvaluator");
+const livenessChecker_1 = require("../services/livenessChecker");
+const interviewPrep_1 = require("../services/interviewPrep");
+const applicationAnswers_1 = require("../services/applicationAnswers");
 dotenv_1.default.config();
 const botToken = process.env.TELEGRAM_BOT_TOKEN;
 if (!botToken) {
@@ -35,24 +39,29 @@ bot.start((ctx) => {
         `Welcome! Your personal DevOps/Cloud career sourcing and Masters scholarship tracking system is active.\n\n` +
         `📌 *Quick Commands*:\n` +
         `• /dashboard - View pipeline overview & stats\n` +
-        `• /jobs - Browse latest sourced DevOps/Cloud jobs\n` +
+        `• /jobs - Browse jobs with AI Match Score (1-5 ⭐)\n` +
         `• /apply <job_id> - Tailor CV for a specific job\n` +
+        `• /prep <job_id> - Generate STAR Method interview prep\n` +
+        `• /answer <job_id> <q> - Generate portal form answer\n` +
         `• /outreach <job_id> - Draft & schedule cold email sequence\n` +
         `• /schools - View upcoming MSc programmes\n` +
         `• /scholarships - View fully-funded scholarships\n` +
         `• /checklist <school_id> - Generate AI application checklist\n` +
         `• /sop <school_id> - Generate Statement of Purpose (SOP)\n` +
-        `• /tasks - View tasks due today & overdue items\n` +
+        `• /tasks - View active application tasks\n` +
         `• /help - Full command list`, { parse_mode: 'Markdown' });
 });
 // /help command
 bot.help((ctx) => {
     ctx.reply(`🛠 *Pipeline Commands Reference*\n\n` +
         `*System A – Career Pipeline*:\n` +
-        `• /jobs - Show recent DevOps / Cloud jobs\n` +
+        `• /jobs - Show recent DevOps jobs with 1-5⭐ score & skill gaps\n` +
         `• /jobs_remote - Show remote-only job listings\n` +
         `• /fetch_jobs - Run automated job scrapers now\n` +
+        `• /check_liveness - Verify open job links & mark expired as closed\n` +
         `• /apply <job_id> - Tailor CV & create application record\n` +
+        `• /prep <job_id> - STAR Method interview prep stories\n` +
+        `• /answer <job_id> <question> - Answer portal form questions\n` +
         `• /outreach <job_id> - Discover recruiter & schedule email\n` +
         `• /outreach_pending - Show cold emails waiting to send\n\n` +
         `*System B – Scholarship & School Tracker*:\n` +
@@ -64,6 +73,7 @@ bot.help((ctx) => {
         `*Unified Tools*:\n` +
         `• /dashboard - Live 7-day pipeline summary\n` +
         `• /tasks - Daily tasks & deadline checklist\n` +
+        `• /report - Weekly AI synthesis & funnel velocity digest\n` +
         `• /resume - View or update your base CV profile`, { parse_mode: 'Markdown' });
 });
 // /fetch_jobs command
@@ -74,26 +84,25 @@ bot.command('fetch_jobs', async (ctx) => {
         ctx.reply(`✅ *Job Sourcing Complete*\n` +
             `• Matching Jobs Sourced: *${stats.totalFetched}*\n` +
             `• Database Updates/Upserts: *${stats.upserted}*\n\n` +
-            `Use /jobs to list the latest items!`, { parse_mode: 'Markdown' });
+            `Use /jobs to list items with AI match scores!`, { parse_mode: 'Markdown' });
     }
     catch (error) {
         console.error('Job fetch command error:', error);
         ctx.reply('⚠️ Failed to complete job sourcing sweep.');
     }
 });
-// /fetch_schools command
-bot.command('fetch_schools', async (ctx) => {
-    ctx.reply('🔍 *Running School & Scholarship Sourcing Sweep...*', { parse_mode: 'Markdown' });
+// /check_liveness command
+bot.command('check_liveness', async (ctx) => {
+    ctx.reply('🔍 *Checking Open Job Links Health & Expiry...*', { parse_mode: 'Markdown' });
     try {
-        const stats = await (0, scholarshipFetcher_1.runScholarshipSourcingPipeline)();
-        ctx.reply(`✅ *School Sourcing Complete*\n` +
-            `• MSc Programmes Stored: *${stats.programmesCount}*\n` +
-            `• Fully-Funded Scholarships: *${stats.scholarshipsCount}*\n\n` +
-            `Use /schools or /scholarships to list opportunities!`, { parse_mode: 'Markdown' });
+        const result = await (0, livenessChecker_1.checkJobsLiveness)();
+        ctx.reply(`✅ *Job Liveness Check Finished*\n` +
+            `• Total Links Tested: *${result.checked}*\n` +
+            `• Dead/Expired Jobs Marked Closed: *${result.closed}*`, { parse_mode: 'Markdown' });
     }
     catch (error) {
-        console.error('School fetch command error:', error);
-        ctx.reply('⚠️ Failed to complete school sourcing sweep.');
+        console.error('Liveness check command error:', error);
+        ctx.reply('⚠️ Failed to run liveness check.');
     }
 });
 // /dashboard command
@@ -121,7 +130,7 @@ bot.command('dashboard', async (ctx) => {
         ctx.reply('⚠️ Error loading dashboard. Please verify Supabase credentials.');
     }
 });
-// /jobs command
+// /jobs command with AI Match Score & Skill Gap
 bot.command('jobs', async (ctx) => {
     try {
         const { data: jobs, error } = await supabase_1.supabase
@@ -129,20 +138,34 @@ bot.command('jobs', async (ctx) => {
             .select('*')
             .eq('status', 'open')
             .order('created_at', { ascending: false })
-            .limit(5);
+            .limit(4);
         if (error)
             throw error;
         if (!jobs || jobs.length === 0) {
             return ctx.reply('📭 No open jobs found in database yet. Use /fetch_jobs to trigger a sourcing sweep!');
         }
-        let message = `🚀 *Latest Sourced Jobs*\n\n`;
-        jobs.forEach((job, idx) => {
-            message += `${idx + 1}. *${job.title}* @ ${job.company}\n`;
+        ctx.reply('🧠 *Evaluating Job Match Scores & Skill Gaps with Gemini AI...*', { parse_mode: 'Markdown' });
+        let message = `🚀 *Latest Jobs with AI Match Scores*\n\n`;
+        for (let i = 0; i < jobs.length; i++) {
+            const job = jobs[i];
+            let scoreStars = '⭐⭐⭐⭐';
+            let matchedStr = job.tech_stack_tags ? job.tech_stack_tags.join(', ') : 'DevOps';
+            let gapStr = 'None';
+            try {
+                const evalResult = await (0, jobEvaluator_1.evaluateJobFit)(job.id);
+                scoreStars = '⭐'.repeat(evalResult.match_score);
+                matchedStr = evalResult.matched_skills.join(', ') || matchedStr;
+                gapStr = evalResult.skill_gaps.join(', ') || 'None';
+            }
+            catch (err) { }
+            message += `${i + 1}. *${job.title}* @ ${job.company}\n`;
+            message += ` Match Score: ${scoreStars}\n`;
             message += `📍 ${job.location} ${job.is_remote ? '(Remote)' : ''}\n`;
-            message += `🏷 Stack: ${job.tech_stack_tags ? job.tech_stack_tags.join(', ') : 'DevOps'}\n`;
+            message += `✅ Matched: \`${matchedStr}\`\n`;
+            message += `⚠️ Skill Gap: \`${gapStr}\`\n`;
             message += `🆔 ID: \`${job.id}\`\n`;
             message += `🔗 [Apply Link](${job.job_url})\n\n`;
-        });
+        }
         ctx.reply(message, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
     }
     catch (error) {
@@ -167,12 +190,63 @@ bot.command('apply', async (ctx) => {
         message += `🔑 *Matched Keywords*:\n\`${tailored.tailored_keywords.join(', ')}\`\n\n`;
         message += `🎯 *Key Custom Bullet Points*:\n`;
         tailored.custom_bullets.forEach((b) => { message += `• ${b}\n`; });
-        message += `\n💡 _Use /outreach ${jobId} to draft cold outreach._`;
+        message += `\n💡 _Use /prep ${jobId} for STAR interview prep, or /outreach ${jobId} to draft cold outreach._`;
         ctx.reply(message, { parse_mode: 'Markdown' });
     }
     catch (error) {
         console.error('Apply command error:', error);
         ctx.reply(`⚠️ Error tailoring resume: ${error.message}`);
+    }
+});
+// /prep <job_id> command - STAR Method Interview Prep
+bot.command('prep', async (ctx) => {
+    const parts = ctx.message.text.split(' ');
+    const jobId = parts[1]?.trim();
+    if (!jobId) {
+        return ctx.reply('⚠️ Usage: `/prep <job_id>`', { parse_mode: 'Markdown' });
+    }
+    ctx.reply(`🎯 *Generating STAR Method Interview Prep for Job ID:* \`${jobId}\`...`, { parse_mode: 'Markdown' });
+    try {
+        const prep = await (0, interviewPrep_1.generateInterviewPrep)(jobId);
+        let message = `🎯 *STAR Interview Preparation Guide*\n`;
+        message += `💼 *Role*: ${prep.role_title} @ ${prep.company}\n\n`;
+        message += `📖 *STAR Stories*:\n`;
+        prep.star_stories.forEach((story, idx) => {
+            message += `*Story #${idx + 1}*\n`;
+            message += `• *Situation*: ${story.situation}\n`;
+            message += `• *Task*: ${story.task}\n`;
+            message += `• *Action*: ${story.action}\n`;
+            message += `• *Result*: ${story.result}\n\n`;
+        });
+        message += `❓ *Top Technical Questions to Prepare*:\n`;
+        prep.technical_questions.forEach((q) => { message += `• ${q}\n`; });
+        ctx.reply(message, { parse_mode: 'Markdown' });
+    }
+    catch (error) {
+        console.error('Prep command error:', error);
+        ctx.reply(`⚠️ Error generating interview prep: ${error.message}`);
+    }
+});
+// /answer <job_id> <question_text> command - Portal Form Answer Assistant
+bot.command('answer', async (ctx) => {
+    const text = ctx.message.text;
+    const parts = text.split(' ');
+    if (parts.length < 3) {
+        return ctx.reply('⚠️ Usage: `/answer <job_id> <your portal question text>`\nExample: `/answer 123e4567-e89b Why do you want to join Canva?`', { parse_mode: 'Markdown' });
+    }
+    const jobId = parts[1].trim();
+    const questionText = parts.slice(2).join(' ').trim();
+    ctx.reply(`✍️ *Generating Grounded Form Answer for Question:* "${questionText}"...`, { parse_mode: 'Markdown' });
+    try {
+        const answer = await (0, applicationAnswers_1.generatePortalAnswer)(jobId, questionText);
+        let message = `📝 *Generated Portal Answer*:\n\n`;
+        message += `"${answer}"\n\n`;
+        message += `💡 _Ready to copy and paste into your application form!_`;
+        ctx.reply(message, { parse_mode: 'Markdown' });
+    }
+    catch (error) {
+        console.error('Answer command error:', error);
+        ctx.reply(`⚠️ Error generating answer: ${error.message}`);
     }
 });
 // /outreach <job_id> command
@@ -326,19 +400,21 @@ bot.command('tasks', async (ctx) => {
         ctx.reply('⚠️ Failed to query tasks.');
     }
 });
-// /report command - Weekly AI Performance Synthesis
+// /report command - Weekly AI Performance & Funnel Velocity Synthesis
 bot.command('report', async (ctx) => {
-    ctx.reply('📊 *Computing 7-Day Performance Metrics & AI Synthesis Digest...*', { parse_mode: 'Markdown' });
+    ctx.reply('📊 *Computing 7-Day Performance Metrics & Funnel Velocity...*', { parse_mode: 'Markdown' });
     try {
         const report = await (0, metricsEngine_1.computeWeeklyMetrics)();
-        let message = `🤖 *Weekly Performance & AI Synthesis Digest*\n`;
+        let message = `🤖 *Weekly Performance & Funnel Velocity Synthesis*\n`;
         message += `📅 *Period*: ${report.weekStart} to ${report.weekEnd}\n\n`;
-        message += `📈 *Key Activity Metrics*:\n`;
+        message += `📈 *Activity & Funnel Metrics*:\n`;
         message += `• Sourced Jobs: *${report.sourcedJobsCount}*\n`;
         message += `• Applications Submitted: *${report.applicationsSentCount}*\n`;
         message += `• Recruiter Cold Emails Sent: *${report.outreachSentCount}*\n`;
         message += `• Cold Email Reply Rate: *${report.emailReplyRate}%*\n`;
-        message += `• Active Interviews: *${report.interviewsCount}*\n\n`;
+        message += `• Active Interviews: *${report.interviewsCount}*\n`;
+        message += `• Avg Response Latency: *${report.avgResponseDays} days*\n`;
+        message += `• Ghosting Rate (>14d): *${report.ghostingRate}%*\n\n`;
         message += `💡 *AI Insights & Strategic Synthesis*:\n`;
         message += `${report.aiInsightsSummary}`;
         ctx.reply(message, { parse_mode: 'Markdown' });
@@ -355,6 +431,7 @@ bot.launch().then(() => {
     setTimeout(() => {
         (0, jobFetcher_1.runJobSourcingPipeline)().catch((err) => console.error('Initial job fetch error:', err));
         (0, scholarshipFetcher_1.runScholarshipSourcingPipeline)().catch((err) => console.error('Initial school fetch error:', err));
+        (0, livenessChecker_1.checkJobsLiveness)().catch((err) => console.error('Initial liveness check error:', err));
     }, 5000);
     // Periodic 6-hour job sourcing trigger
     const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
@@ -362,6 +439,12 @@ bot.launch().then(() => {
         console.log('⏰ Executing 6-hour scheduled job sourcing sweep...');
         (0, jobFetcher_1.runJobSourcingPipeline)().catch((err) => console.error('Scheduled job fetch error:', err));
     }, SIX_HOURS_MS);
+    // Periodic 24-hour job liveness check
+    const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+    setInterval(() => {
+        console.log('⏰ Executing daily job liveness check...');
+        (0, livenessChecker_1.checkJobsLiveness)().catch((err) => console.error('Scheduled liveness check error:', err));
+    }, TWENTY_FOUR_HOURS_MS);
 });
 // Graceful shutdown
 process.once('SIGINT', () => bot.stop('SIGINT'));
