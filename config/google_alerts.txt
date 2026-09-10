@@ -1,0 +1,10 @@
+# =========================================================================
+# Google Alerts RSS Feeds List
+# =========================================================================
+# Paste all your Google Alert RSS Feed URLs below (one per line).
+# The system will automatically scrape all of them concurrently every 6 hours
+# or whenever you trigger /fetch_jobs in Telegram!
+
+# Example:
+# https://www.google.com/alerts/feeds/0123456789/11111111111111111111
+# https://www.google.com/alerts/feeds/0123456789/22222222222222222222

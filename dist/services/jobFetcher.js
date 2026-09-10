@@ -129,41 +129,64 @@ async function fetchWeWorkRemotelyJobs() {
         return [];
     }
 }
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 /**
- * Sourcing Source 3: Google Alerts RSS Feed Integration
+ * Sourcing Source 3: Google Alerts RSS Feed Integration (Supports multiple URLs)
  */
 async function fetchGoogleAlertsJobs() {
-    const alertsUrl = process.env.GOOGLE_ALERTS_RSS_URL;
-    if (!alertsUrl)
+    const urls = [];
+    // 1. Read from environment variable (comma or newline separated)
+    const envUrls = process.env.GOOGLE_ALERTS_RSS_URLS || process.env.GOOGLE_ALERTS_RSS_URL || '';
+    if (envUrls) {
+        const parsed = envUrls.split(/[\r\n,]+/).map((u) => u.trim()).filter(Boolean);
+        urls.push(...parsed);
+    }
+    // 2. Read from config/google_alerts.txt if present
+    const configPath = path_1.default.join(process.cwd(), 'config', 'google_alerts.txt');
+    if (fs_1.default.existsSync(configPath)) {
+        try {
+            const fileContent = fs_1.default.readFileSync(configPath, 'utf8');
+            const fileUrls = fileContent.split(/\r?\n/).map((u) => u.trim()).filter((u) => u && !u.startsWith('#'));
+            urls.push(...fileUrls);
+        }
+        catch (err) {
+            console.warn('⚠️ Could not read config/google_alerts.txt:', err.message);
+        }
+    }
+    // Deduplicate URLs
+    const uniqueUrls = Array.from(new Set(urls));
+    if (uniqueUrls.length === 0)
         return [];
-    try {
-        console.log('📡 Fetching from Google Alerts RSS feed...');
-        const feed = await rssParser.parseURL(alertsUrl);
-        const results = [];
-        for (const item of feed.items) {
-            const title = (item.title || '').replace(/<[^>]*>?/gm, ''); // Clean HTML tags
-            const description = (item.content || item.summary || '').replace(/<[^>]*>?/gm, '');
-            if (isRelevantJob(title, description)) {
-                results.push({
-                    title: title || 'DevOps Opportunity',
-                    company: 'Google Alerts Source',
-                    location: 'Remote / Unspecified',
-                    is_remote: true,
-                    tech_stack_tags: extractTechTags(title, description),
-                    source: 'Google Alerts',
-                    job_url: item.link || item.guid || '',
-                    description,
-                    posted_date: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
-                    status: 'open'
-                });
+    console.log(`📡 Fetching from ${uniqueUrls.length} Google Alerts RSS feed(s)...`);
+    const allResults = [];
+    await Promise.allSettled(uniqueUrls.map(async (feedUrl) => {
+        try {
+            const feed = await rssParser.parseURL(feedUrl);
+            for (const item of feed.items) {
+                const title = (item.title || '').replace(/<[^>]*>?/gm, ''); // Clean HTML
+                const description = (item.content || item.summary || '').replace(/<[^>]*>?/gm, '');
+                if (isRelevantJob(title, description)) {
+                    allResults.push({
+                        title: title || 'DevOps Opportunity',
+                        company: 'Google Alerts Source',
+                        location: 'Remote / Unspecified',
+                        is_remote: true,
+                        tech_stack_tags: extractTechTags(title, description),
+                        source: 'Google Alerts',
+                        job_url: item.link || item.guid || '',
+                        description,
+                        posted_date: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+                        status: 'open'
+                    });
+                }
             }
         }
-        return results;
-    }
-    catch (error) {
-        console.error('⚠️ Google Alerts RSS fetch error:', error.message);
-        return [];
-    }
+        catch (err) {
+            console.error(`⚠️ Error fetching Google Alert feed (${feedUrl}):`, err.message);
+        }
+    }));
+    return allResults;
 }
 /**
  * Main Job Sourcing Orchestrator
