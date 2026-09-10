@@ -5,6 +5,18 @@
 # The system will automatically scrape all of them concurrently every 6 hours
 # or whenever you trigger /fetch_jobs in Telegram!
 
-# Example:
-# https://www.google.com/alerts/feeds/0123456789/11111111111111111111
-# https://www.google.com/alerts/feeds/0123456789/22222222222222222222
+
+https://www.google.com/alerts/feeds/05010278731384986001/3878789134879473219
+https://www.google.com/alerts/feeds/05010278731384986001/11182608719113194699
+https://www.google.com/alerts/feeds/05010278731384986001/7740985475514284993
+https://www.google.com/alerts/feeds/05010278731384986001/5188539264569941150
+https://www.google.com/alerts/feeds/05010278731384986001/10643549047741578994
+https://www.google.com/alerts/feeds/05010278731384986001/12398284335452678361
+https://www.google.com/alerts/feeds/05010278731384986001/4781545951589440885
+https://www.google.com/alerts/feeds/05010278731384986001/16021169561775113885
+https://www.google.com/alerts/feeds/05010278731384986001/16228742916270795754
+https://www.google.com/alerts/feeds/05010278731384986001/14599101254533261503
+https://www.google.com/alerts/feeds/05010278731384986001/14599101254533262703
+https://www.google.com/alerts/feeds/05010278731384986001/8852896618522334465
+https://www.google.com/alerts/feeds/05010278731384986001/8732115325211824828
+https://www.google.com/alerts/feeds/05010278731384986001/8852896618522336725
