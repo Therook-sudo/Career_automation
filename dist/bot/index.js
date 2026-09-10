@@ -424,6 +424,55 @@ bot.command('report', async (ctx) => {
         ctx.reply('⚠️ Error computing weekly performance report.');
     }
 });
+// /sop_sample command - Store sample SOP style text
+bot.command('sop_sample', async (ctx) => {
+    const parts = ctx.message.text.split(' ');
+    const sampleText = parts.slice(1).join(' ').trim();
+    if (!sampleText) {
+        return ctx.reply(`✍️ *Sample SOP Style Guide*\n\n` +
+            `Usage: \`/sop_sample <paste your writing style or sample SOP text>\`\n\n` +
+            `Example: \`/sop_sample My passion for cloud native systems started when...\``, { parse_mode: 'Markdown' });
+    }
+    const { data: profile } = await supabase_1.supabase.from('user_profile').select('*').limit(1).single();
+    if (profile) {
+        const existingParsed = profile.parsed_json || {};
+        await supabase_1.supabase.from('user_profile').update({
+            parsed_json: { ...existingParsed, sop_sample: sampleText }
+        }).eq('id', profile.id);
+    }
+    else {
+        await supabase_1.supabase.from('user_profile').insert({
+            full_name: 'DevOps Candidate',
+            headline: 'DevOps & Cloud Engineer',
+            parsed_json: { sop_sample: sampleText }
+        });
+    }
+    ctx.reply('✅ *Sample SOP Style Guide Saved!* Gemini AI will use this style whenever generating Statement of Purpose drafts.', { parse_mode: 'Markdown' });
+});
+// Text message listener for direct CV text pastes
+bot.on('text', async (ctx, next) => {
+    const text = ctx.message.text;
+    if (text.startsWith('/'))
+        return next(); // Ignore command messages
+    if (text.length > 100 && (text.toLowerCase().includes('experience') || text.toLowerCase().includes('skills') || text.toLowerCase().includes('education'))) {
+        const { data: profile } = await supabase_1.supabase.from('user_profile').select('*').limit(1).single();
+        if (profile) {
+            await supabase_1.supabase.from('user_profile').update({
+                raw_resume_text: text,
+                updated_at: new Date().toISOString()
+            }).eq('id', profile.id);
+        }
+        else {
+            await supabase_1.supabase.from('user_profile').insert({
+                full_name: 'DevOps Candidate',
+                headline: 'DevOps & Cloud Engineer',
+                raw_resume_text: text
+            });
+        }
+        return ctx.reply('✅ *Base Resume Updated via Telegram!* All future AI tailoring will use this updated CV baseline.', { parse_mode: 'Markdown' });
+    }
+    return next();
+});
 // Start bot & background sourcing schedulers
 bot.launch().then(() => {
     console.log('🤖 Telegram Bot successfully launched & connected to Supabase!');

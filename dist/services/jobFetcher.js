@@ -19,7 +19,9 @@ const TITLE_KEYWORDS = [
     'infrastructure',
     'security engineer',
     'systems engineer',
-    'kubernetes'
+    'kubernetes',
+    'scholarship',
+    'masters'
 ];
 const TECH_STACK_TAGS = [
     'Kubernetes',
@@ -98,7 +100,6 @@ async function fetchWeWorkRemotelyJobs() {
         for (const item of feed.items) {
             const title = item.title || '';
             const description = item.content || item.summary || '';
-            // Parse Company Name from title if formatted like "Company: Role"
             let company = 'Unknown';
             let cleanTitle = title;
             if (title.includes(':')) {
@@ -129,13 +130,50 @@ async function fetchWeWorkRemotelyJobs() {
     }
 }
 /**
+ * Sourcing Source 3: Google Alerts RSS Feed Integration
+ */
+async function fetchGoogleAlertsJobs() {
+    const alertsUrl = process.env.GOOGLE_ALERTS_RSS_URL;
+    if (!alertsUrl)
+        return [];
+    try {
+        console.log('📡 Fetching from Google Alerts RSS feed...');
+        const feed = await rssParser.parseURL(alertsUrl);
+        const results = [];
+        for (const item of feed.items) {
+            const title = (item.title || '').replace(/<[^>]*>?/gm, ''); // Clean HTML tags
+            const description = (item.content || item.summary || '').replace(/<[^>]*>?/gm, '');
+            if (isRelevantJob(title, description)) {
+                results.push({
+                    title: title || 'DevOps Opportunity',
+                    company: 'Google Alerts Source',
+                    location: 'Remote / Unspecified',
+                    is_remote: true,
+                    tech_stack_tags: extractTechTags(title, description),
+                    source: 'Google Alerts',
+                    job_url: item.link || item.guid || '',
+                    description,
+                    posted_date: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
+                    status: 'open'
+                });
+            }
+        }
+        return results;
+    }
+    catch (error) {
+        console.error('⚠️ Google Alerts RSS fetch error:', error.message);
+        return [];
+    }
+}
+/**
  * Main Job Sourcing Orchestrator
  */
 async function runJobSourcingPipeline() {
-    console.log('🔄 Sourcing jobs from remote feeds...');
+    console.log('🔄 Sourcing jobs from remote feeds & Google Alerts...');
     const remoteOKJobs = await fetchRemoteOKJobs();
     const wwrJobs = await fetchWeWorkRemotelyJobs();
-    const allJobs = [...remoteOKJobs, ...wwrJobs];
+    const alertsJobs = await fetchGoogleAlertsJobs();
+    const allJobs = [...remoteOKJobs, ...wwrJobs, ...alertsJobs];
     if (allJobs.length === 0) {
         console.log('ℹ️ No new jobs found in current sweep.');
         return { totalFetched: 0, upserted: 0 };
