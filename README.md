@@ -11,8 +11,8 @@ An end-to-end, automation-heavy AI system designed for **DevOps, Cloud, SRE, and
 
 The repository implements two connected autonomous pipelines managed via a **Telegram Bot**, a **Self-Hosted Web Dashboard**, and **Live Google Sheets Synchronization**:
 
-1. **System A – Career Pipeline**: Automated job sourcing, AI match scoring (1–5⭐), skill gap analysis, AI resume tailoring, recruiter lead discovery, cold email outreach sequences (Resend API), STAR interview prep, and application portal form answer assistance.
-2. **System B – Scholarship & School Tracker**: Sourcing for international MSc programmes (SECCLO Erasmus Mundus, EIT Digital Cloud, KTH Cybersecurity, DAAD Germany), AI document checklist extraction, Statement of Purpose (SOP) generation, and deadline alerts.
+1. **System A – Career Pipeline**: Automated job sourcing (RemoteOK, WeWorkRemotely, Google Alerts RSS), AI match scoring (1–5⭐), skill gap analysis, AI resume tailoring (0% hallucination), recruiter lead discovery, cold email outreach sequences (Resend API), STAR interview prep, and application portal form answer assistance.
+2. **System B – Scholarship & School Tracker**: Sourcing for international MSc programmes (SECCLO Erasmus Mundus, EIT Digital Cloud, KTH Cybersecurity, DAAD Germany), AI document checklist extraction, customized Statement of Purpose (SOP) generation with style guide grounding, and deadline alerts.
 
 ---
 
@@ -21,7 +21,7 @@ The repository implements two connected autonomous pipelines managed via a **Tel
 ```mermaid
 flowchart TD
     subgraph Sourcing ["1. Sourcing Layer"]
-        A[RemoteOK / WeWorkRemotely RSS / JSearch] -->|Automated Scrapers| B[(Supabase PostgreSQL)]
+        A[RemoteOK / WeWorkRemotely RSS / Google Alerts RSS] -->|Automated Scrapers| B[(Supabase PostgreSQL)]
         C[Erasmus Mundus / DAAD / University Feeds] -->|Bi-weekly Sweep| B
     end
 
@@ -51,17 +51,19 @@ flowchart TD
 
 ### System A – Career Pipeline
 * ⭐ **AI Job Match Scoring (1–5 Stars) & Skill Gap Matrix**: Gemini AI automatically scores open job listings from 1 to 5 Stars based on candidate fit and highlights matched vs missing skills (e.g. `✅ Matched: Kubernetes, Terraform | ⚠️ Skill Gap: ArgoCD`).
-* 🔍 **Multi-Source Job Sourcing**: Scrapes RemoteOK, WeWorkRemotely, and RSS feeds every 6 hours with automatic deduplication (`UPSERT` on `job_url`).
+* 🔍 **Multi-Source Job Sourcing + Google Alerts RSS**: Scrapes RemoteOK, WeWorkRemotely, and Google Alerts RSS feeds every 6 hours with automatic deduplication (`UPSERT` on `job_url`).
 * 🎯 **AI Resume Tailoring Engine**: Aligns keywords, re-orders bullet points, and writes 3-sentence executive summaries tailored to target JDs with strict zero-hallucination guardrails.
 * 📧 **Automated Cold Email Outreach**: Generates personalized cold emails and multi-stage follow-up sequences (Day 0, Day 2, Day 5, Day 10) via **Resend API**. Features automatic sequence cancellation when recipient reply is detected.
-* 🔗 **Automated Job Liveness Checker**: Daily health checker pings open job URLs and automatically marks expired/404 postings as `closed`.
+* 🔗 **Automated Job Liveness & Dead Board Checker**: Daily health checker pings open job URLs and automatically marks expired/404 postings as `closed`.
 * 🎯 **STAR Method Interview Prep Generator (`/prep`)**: Constructs 3 custom Situation-Task-Action-Result interview stories + technical questions for target jobs.
 * ✍️ **Application Form Answer Assistant (`/answer`)**: Writes 60–120 word grounded responses for custom portal form questions (e.g. *"Why Canva?"*, *"Describe a complex cloud problem you solved"*).
+* 📄 **Instant CV Update via Telegram**: Simply paste your updated resume text directly into the Telegram bot chat to instantly update your baseline profile in Supabase.
 
 ### System B – Scholarship & School Application Tracker
 * 🎓 **MSc Programme & Scholarship Sourcing**: Tracks top MSc programmes in Cloud Engineering, Information Security, and Computer Science (SECCLO, DAAD, EIT Digital, KTH, Aalto).
 * 📋 **AI Document Checklist Parser**: Extracts actionable preparation tasks (Motivation letter, academic recommendation letters, IELTS/TOEFL, apostille) with calculated due dates.
 * 📜 **AI Statement of Purpose (SOP) Generator**: Drafts 500–700 word tailored Statements of Purpose connecting candidate's DevOps & Cloud background to university research focus.
+* ✍️ **Custom SOP Style Guide (`/sop_sample`)**: Provide a sample SOP or custom writing voice via Telegram, and the AI will mimic your exact structure and tone for all future university SOPs.
 * 📅 **Deadline Manager**: Daily checks notifying user of deadlines due within 30, 14, and 7 days.
 
 ### Analytics & Unified Controls
@@ -78,7 +80,7 @@ flowchart TD
 | `/dashboard` | Unified | Displays pipeline overview (Jobs, Applications, Active Interviews, Schools, Pending Tasks). |
 | `/jobs` | Career | Displays open jobs with **1-5⭐ AI Match Scores** & Skill Gap Matrix. |
 | `/jobs_remote` | Career | Filters open remote-only DevOps & Cloud roles. |
-| `/fetch_jobs` | Career | Triggers manual job sourcing sweep across remote job boards. |
+| `/fetch_jobs` | Career | Triggers manual job sourcing sweep (RemoteOK, WWR, Google Alerts). |
 | `/check_liveness` | Career | Runs health check on job URLs and marks dead/404 postings as closed. |
 | `/apply <job_id>` | Career | Tailors CV with Gemini AI and creates application record. |
 | `/prep <job_id>` | Career | Generates **STAR Method interview stories** & technical questions. |
@@ -90,9 +92,28 @@ flowchart TD
 | `/fetch_schools` | School | Runs school and scholarship sourcing sweep. |
 | `/checklist <school_id>`| School | Generates AI application document checklist and saves to tasks. |
 | `/sop <school_id>` | School | Generates tailored Statement of Purpose (SOP) draft. |
+| `/sop_sample <text>` | School | Saves your personal sample SOP style guide for future AI drafting. |
 | `/tasks` | Unified | Lists active application tasks and upcoming deadlines. |
-| `/report` | Unified | Calculates 7-day stats, **funnel velocity**, **ghosting rates**, & AI synthesis digest. |
-| `/resume` | Unified | Displays or updates baseline candidate CV text. |
+| `/report` | Unified | Calculates 7-day stats, **funnel velocity (avg response days)**, **ghosting rates**, & AI synthesis digest. |
+| `/resume` | Unified | Displays baseline candidate CV profile (or paste text directly to update). |
+
+---
+
+## 📊 Google Sheets Sync Setup (4 Tabs)
+
+When setting up your live Google Sheet for automated n8n synchronization, create **4 Tabs** with the following column headers in Row 1:
+
+### Tab 1: `Jobs Pipeline`
+`Job Title` | `Company` | `Location` | `Match Score` | `Matched Skills` | `Skill Gaps` | `Status` | `Date Applied` | `Job URL`
+
+### Tab 2: `Cold Outreach`
+`Company` | `Recruiter Name` | `Recruiter Email` | `Channel` | `Subject` | `Status` | `Sequence Stage` | `Send Date`
+
+### Tab 3: `Schools & Scholarships`
+`Programme Name` | `University` | `Country` | `Field` | `Funding Type` | `Deadline` | `SOP Status` | `Portal Link`
+
+### Tab 4: `Tasks`
+`Task Description` | `Entity Type` | `Priority` | `Due Date` | `Status`
 
 ---
 
@@ -170,6 +191,9 @@ KIMI_API_KEY=your-kimi-moonshot-key
 
 RESEND_API_KEY=re_your_resend_api_key
 OUTREACH_SENDER_EMAIL=outreach@yourdomain.com
+
+# Optional Google Alerts RSS feed URL
+GOOGLE_ALERTS_RSS_URL=https://google.com/alerts/feeds/...
 ```
 
 ### 5. Run Locally
