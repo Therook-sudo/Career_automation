@@ -6,13 +6,14 @@ services:
     container_name: n8n_pipeline
     restart: always
     ports:
-      - "5678:5678"
+      - "127.0.0.1:5678:5678"
     environment:
-      - N8N_HOST=localhost
+      - N8N_HOST=n8n.therook.xyz
       - N8N_PORT=5678
-      - N8N_PROTOCOL=http
+      - N8N_PROTOCOL=https
       - NODE_ENV=production
-      - WEBHOOK_URL=http://localhost:5678/
+      - WEBHOOK_URL=https://n8n.therook.xyz/
+      - N8N_EDITOR_BASE_URL=https://n8n.therook.xyz/
     volumes:
       - n8n_data:/home/node/.n8n
 
@@ -30,7 +31,7 @@ services:
     container_name: pipeline_dashboard
     restart: always
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     volumes:
       - ./dashboard:/usr/share/nginx/html:ro
 
