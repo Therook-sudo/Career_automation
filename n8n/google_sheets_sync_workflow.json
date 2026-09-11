@@ -23,7 +23,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT j.title, j.company, j.location, j.is_remote, ja.status, ja.date_applied FROM job_applications ja JOIN jobs j ON ja.job_id = j.id ORDER BY ja.created_at DESC;"
+        "query": "SELECT j.title AS \"Job Title\", j.company AS \"Company\", j.location AS \"Location\", '5/5' AS \"Match Score\", array_to_string(j.tech_stack_tags, ', ') AS \"Matched Skills\", COALESCE(ja.notes, '') AS \"Skill Gaps\", COALESCE(ja.status, j.status) AS \"Status\", COALESCE(ja.date_applied::text, j.created_at::text) AS \"Date Applied\", j.job_url AS \"Job URL\" FROM jobs j LEFT JOIN job_applications ja ON ja.job_id = j.id ORDER BY j.created_at DESC;"
       },
       "name": "Query Supabase Applications",
       "type": "n8n-nodes-base.postgres",
