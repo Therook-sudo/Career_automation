@@ -1,5 +1,5 @@
 {
-  "name": "Pipeline - Live Google Sheets Sync",
+  "name": "Path Pilot - Complete 4-Tab Google Sheets Sync",
   "nodes": [
     {
       "parameters": {
@@ -16,8 +16,8 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.1,
       "position": [
-        250,
-        300
+        200,
+        450
       ]
     },
     {
@@ -25,26 +25,171 @@
         "operation": "executeQuery",
         "query": "SELECT j.title AS \"Job Title\", j.company AS \"Company\", j.location AS \"Location\", '5/5' AS \"Match Score\", array_to_string(j.tech_stack_tags, ', ') AS \"Matched Skills\", COALESCE(ja.notes, '') AS \"Skill Gaps\", COALESCE(ja.status, j.status) AS \"Status\", COALESCE(ja.date_applied::text, j.created_at::text) AS \"Date Applied\", j.job_url AS \"Job URL\" FROM jobs j LEFT JOIN job_applications ja ON ja.job_id = j.id ORDER BY j.created_at DESC;"
       },
-      "name": "Query Supabase Applications",
+      "name": "1. Query Jobs",
       "type": "n8n-nodes-base.postgres",
       "typeVersion": 2.3,
       "position": [
         450,
-        300
+        200
       ]
     },
     {
       "parameters": {
+        "resource": "sheetWithinDocument",
         "operation": "appendOrUpdate",
-        "sheetName": "Jobs Pipeline",
+        "document": {
+          "__rl": true,
+          "value": "Path pilot",
+          "mode": "name"
+        },
+        "sheet": {
+          "__rl": true,
+          "value": "Jobs Pipeline",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Job URL"
+          ]
+        },
         "options": {}
       },
-      "name": "Google Sheets Node",
+      "name": "Sync Tab: Jobs Pipeline",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "position": [
-        650,
-        300
+        700,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT c.name AS \"Contact Name\", COALESCE(c.role_title, 'Hiring Lead') AS \"Role\", c.company AS \"Company\", c.email AS \"Email\", COALESCE(eo.subject, 'DevOps Engineering Inquiry') AS \"Subject\", CONCAT('Step ', COALESCE(eo.follow_up_sequence_id, 1)) AS \"Sequence Step\", COALESCE(eo.status, 'scheduled') AS \"Status\", COALESCE(eo.send_at::text, '') AS \"Scheduled Date\", COALESCE(eo.sent_at::text, '') AS \"Sent Date\" FROM contacts c LEFT JOIN email_outreach eo ON eo.contact_id = c.id ORDER BY c.created_at DESC;"
+      },
+      "name": "2. Query Cold Outreach",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        450,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheetWithinDocument",
+        "operation": "appendOrUpdate",
+        "document": {
+          "__rl": true,
+          "value": "Path pilot",
+          "mode": "name"
+        },
+        "sheet": {
+          "__rl": true,
+          "value": "Cold Outreach",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Email"
+          ]
+        },
+        "options": {}
+      },
+      "name": "Sync Tab: Cold Outreach",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT p.name AS \"Programme Name\", p.university AS \"University\", p.country AS \"Country\", COALESCE(s.name, 'Direct University Funding') AS \"Scholarship Name\", COALESCE(s.coverage, p.tuition_fee) AS \"Coverage\", COALESCE(s.deadline::text, 'Rolling') AS \"Deadline\", COALESCE(sa.status, 'planning') AS \"Status\", COALESCE(s.application_link, p.main_link) AS \"Application Link\" FROM programmes p LEFT JOIN scholarships s ON s.programme_id = p.id LEFT JOIN scholarship_applications sa ON sa.programme_id = p.id ORDER BY p.created_at DESC;"
+      },
+      "name": "3. Query Schools & Scholarships",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        450,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheetWithinDocument",
+        "operation": "appendOrUpdate",
+        "document": {
+          "__rl": true,
+          "value": "Path pilot",
+          "mode": "name"
+        },
+        "sheet": {
+          "__rl": true,
+          "value": "Schools & Scholarships",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Application Link"
+          ]
+        },
+        "options": {}
+      },
+      "name": "Sync Tab: Schools & Scholarships",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT entity_type AS \"Category\", description AS \"Description\", priority AS \"Priority\", status AS \"Status\", due_date::text AS \"Due Date\" FROM tasks ORDER BY due_date ASC;"
+      },
+      "name": "4. Query Tasks",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        450,
+        740
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheetWithinDocument",
+        "operation": "appendOrUpdate",
+        "document": {
+          "__rl": true,
+          "value": "Path pilot",
+          "mode": "name"
+        },
+        "sheet": {
+          "__rl": true,
+          "value": "Tasks",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "matchingColumns": [
+            "Description"
+          ]
+        },
+        "options": {}
+      },
+      "name": "Sync Tab: Tasks",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        700,
+        740
       ]
     }
   ],
@@ -53,18 +198,66 @@
       "main": [
         [
           {
-            "node": "Query Supabase Applications",
+            "node": "1. Query Jobs",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "2. Query Cold Outreach",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "3. Query Schools & Scholarships",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "4. Query Tasks",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Query Supabase Applications": {
+    "1. Query Jobs": {
       "main": [
         [
           {
-            "node": "Google Sheets Node",
+            "node": "Sync Tab: Jobs Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Query Cold Outreach": {
+      "main": [
+        [
+          {
+            "node": "Sync Tab: Cold Outreach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Query Schools & Scholarships": {
+      "main": [
+        [
+          {
+            "node": "Sync Tab: Schools & Scholarships",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. Query Tasks": {
+      "main": [
+        [
+          {
+            "node": "Sync Tab: Tasks",
             "type": "main",
             "index": 0
           }
