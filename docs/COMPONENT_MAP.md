@@ -56,7 +56,7 @@ This document defines the formal component ownership contracts, runtime topologi
   * Recurring 6-hour interval execution (this sweep executes **only once at startup** via `setTimeout` and is referenced in `/help` via `/fetch_schools`).
   * Checklist generation (owned by `checklistGenerator.ts`) or SOP drafting (owned by `sopGenerator.ts`).
 * **Failure Modes & Degradation**:
-  * *Database Upsert Failure*: Logs error; Telegram bot alerts user: `"⚠️ Failed to query programmes table"`.
+  * *Database Upsert Failure / Startup Rejection*: If a database upsert fails on a programme or scholarship record, the loop suppresses the error and skips incrementing `progInserted`/`scholInserted`; the function completes and returns `{ programmesCount, scholarshipsCount }` with a console log summary. Any unhandled rejection during the startup sweep is caught by `.catch()` in `src/bot/index.ts:560` and logged to console (`console.error('Initial school fetch error:', err)`). No user-facing Telegram notification or bot alert is dispatched.
 
 #### C. Job Liveness & Dead Board Prober (`src/services/livenessChecker.ts`)
 * **Owns**:
@@ -216,7 +216,7 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 * **Does NOT own**:
   * Backend AI dispatch or automated background syncing.
 * **Failure Modes & Degradation**:
-  * *Supabase Connection Drop*: Renders empty cards with reload prompt.
+  * *Static Configuration & Connection State*: The frontend ships with static placeholder credentials (`SUPABASE_URL = "https://YOUR_SUPABASE_PROJECT_ID.supabase.co"` and `SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"`). If `SUPABASE_URL` is not configured or `supabaseClient` is null, `refreshData()` silently aborts; the dashboard remains in its static initial state (all stat card counts display `'0'`, and tables retain initial static placeholder rows `"Loading programmes..."` and `"Loading outreach history..."`). If an active Supabase client fails or encounters a connection drop during `refreshData()`, rendering is skipped without displaying any error banner or reload prompt.
 
 #### C. n8n Automation Engine (`n8n/google_sheets_sync_workflow.json` on `:5678`)
 * **Owns**:
@@ -279,7 +279,7 @@ The Telegram bot (`src/bot/index.ts`) registers command handlers, message listen
 
 ### 4.2 Advertised `/help` Menu Actions & Resolution Mapping
 
-The bot's `/help` text advertises 17 command entries to users. The table below maps each advertised command to its implementation resolution in the codebase:
+The bot's `/help` text advertises 18 command entries to users. The table below maps each advertised command to its implementation resolution in the codebase:
 
 | Advertised `/help` Command | Advertised Description | Code Implementation Resolution |
 | :--- | :--- | :--- |
@@ -300,7 +300,7 @@ The bot's `/help` text advertises 17 command entries to users. The table below m
 | `/dashboard` | Live 7-day pipeline summary | Handled by `bot.command('dashboard')`. |
 | `/tasks` | Daily tasks & deadline checklist | Handled by `bot.command('tasks')`. |
 | `/report` | Weekly AI synthesis & funnel velocity digest | Handled by `bot.command('report')`. |
-| `/resume` | View or update your base CV profile | Advertised in `/help`; handled by direct CV text paste listener `bot.on('text')` which updates `user_profile.raw_resume_text`. |
+| `/resume` | View or update your base CV profile | Unimplemented as a slash command. There is no `bot.command('resume')` handler, and the `bot.on('text')` listener explicitly ignores slash commands via `if (text.startsWith('/')) return next()`. Profile text updates are instead performed exclusively by sending un-prefixed CV text (>100 characters containing 'experience', 'skills', or 'education') to the text message listener. |
 
 ---
 
