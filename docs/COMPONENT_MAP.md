@@ -48,28 +48,29 @@ This document defines the formal component ownership contracts, runtime topologi
 
 #### B. Scholarship & Programme Sourcing Engine (`src/services/scholarshipFetcher.ts`)
 * **Owns**:
-  * Sourcing and seeding European and international MSc programmes and linked fully-funded scholarships.
-  * Writing programme metadata into `programmes` (`UPSERT` on `main_link`) and scholarship metadata into `scholarships` (`UPSERT` on `application_link`).
+  * Sourcing and seeding European and international MSc programmes (`SEED_PROGRAMMES`) and linked fully-funded scholarships.
+  * Writing programme metadata into `programmes` (`UPSERT` on `main_link`) and scholarship metadata into `scholarships` (`UPSERT` on `application_link`) with dynamic deadlines (`now + 4 months`).
 * **Talks to**:
   * Supabase Client (`supabase.from('programmes')`, `supabase.from('scholarships')`).
 * **Does NOT own**:
-  * Recurring 6-hour interval execution (this sweep executes **only once at startup** and on-demand via the `/fetch_schools` command).
+  * Recurring 6-hour interval execution (this sweep executes **only once at startup** via `setTimeout` and is referenced in `/help` via `/fetch_schools`).
   * Checklist generation (owned by `checklistGenerator.ts`) or SOP drafting (owned by `sopGenerator.ts`).
 * **Failure Modes & Degradation**:
   * *Database Upsert Failure*: Logs error; Telegram bot alerts user: `"⚠️ Failed to query programmes table"`.
 
 #### C. Job Liveness & Dead Board Prober (`src/services/livenessChecker.ts`)
 * **Owns**:
-  * Performing HTTP `HEAD`/`GET` requests against all `status = 'open'` listings in `jobs`.
-  * Updating dead (404, 410, or page containing closed markers) listings to `status = 'closed'`.
+  * Performing HTTP `GET` requests against up to 20 listings in `jobs` with `status = 'open'` (`limit(20)`).
+  * Checking response status and body markers (`404`, `410`, `'job is no longer available'`, `'position has been filled'`, `'this job has expired'`) to detect dead listings.
+  * Updating dead listings to `status = 'closed'` in the `jobs` table.
 * **Talks to**:
-  * Target job URLs via Axios (5000ms timeout, browser User-Agent).
+  * Target job URLs via Axios (**6000ms timeout**, browser User-Agent, `validateStatus: (status) => status < 500`).
   * Supabase Client (`supabase.from('jobs')`).
 * **Does NOT own**:
-  * Deleting job records (only updates status to preserve historical tracking).
-  * Recurring interval (invoked once at startup, every 24 hours via `setInterval` in `src/bot/index.ts`, or via `/check_liveness`).
+  * Deleting job records (only updates `status = 'closed'` to preserve historical tracking).
+  * Continuous crawling (invoked once at startup with 5s delay, every 24 hours via `setInterval` in `src/bot/index.ts`, or on demand via `/check_liveness`).
 * **Failure Modes & Degradation**:
-  * *Network Timeout / Connection Refused*: Non-definitive network failures are ignored, preserving the open status to avoid false-positive closures on temporary network blips.
+  * *Network Timeout / Connection Refused / 5xx Server Errors*: Non-404 network failures and timeouts are caught and ignored without marking the job closed, preserving the `open` status to avoid false-positive closures on temporary network blips.
 
 ---
 
@@ -79,70 +80,78 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 
 #### A. Job Fit Evaluator (`src/services/jobEvaluator.ts`)
 * **Owns**:
-  * Computing 1–5 Star match scores, matched skills, and missing skill gaps between `user_profile` and target `jobs` listing.
+  * Computing 1–5 Star match scores, matched skills, skill gaps, red flags, and fit summaries between `user_profile` candidate skills and target `jobs` listing.
 * **Talks to**:
   * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`user_profile`, `jobs`).
 * **Does NOT own**:
   * Updating baseline candidate resume text (owned by `user_profile`).
 * **Failure Modes & Degradation**:
-  * *Missing API Key / Gemini Rate Limit*: Falls back to keyword matching against `TECH_STACK_TAGS` with default ⭐⭐⭐⭐ rating.
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Evaluates candidate skills against `job.tech_stack_tags`, computing rule-based score `score = Math.min(5, Math.max(1, Math.round((matched.length / (requiredTags.length || 1)) * 5)))`, returning `{ match_score: score || 4, matched_skills: matched.length ? matched : ['Kubernetes', 'Docker', 'AWS'], skill_gaps: gaps, red_flags: [], fit_summary: 'Strong alignment on core DevOps & Cloud infrastructure stack.' }`.
+  * *Gemini Runtime Error / JSON Parse Error*: Catches error, logs `console.error('⚠️ Job evaluation error:', err.message)`, and returns fallback object `{ match_score: 4, matched_skills: job.tech_stack_tags || ['Kubernetes', 'Docker'], skill_gaps: [], red_flags: [], fit_summary: 'DevOps & Cloud alignment.' }`.
 
 #### B. Resume Tailoring Engine (`src/services/aiTailor.ts`)
 * **Owns**:
-  * Generating tailored 3-sentence summary, aligned keywords, and re-weighted accomplishment bullets.
-  * Inserting `job_applications` record with status `applied`.
+  * Generating tailored 3-sentence summary, aligned keywords, and customized bullet points for target `job_id`.
+  * Inserting/updating `job_applications` record with initial status `planning`, `application_channel: 'portal'`, and `date_applied: new Date().toISOString()`.
 * **Talks to**:
   * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`user_profile`, `jobs`, `job_applications`).
 * **Does NOT own**:
   * Physical PDF/DOCX rendering or export.
 * **Failure Modes & Degradation**:
-  * *Gemini API Failure*: Returns deterministic rule-based bullet points derived directly from baseline profile.
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Generates mock tailored output with tailored summary, keywords from `job.tech_stack_tags` (or `['Kubernetes', 'Docker', 'AWS', 'Terraform', 'CI/CD']`), and 3 static bullets (Kubernetes infrastructure, Terraform automation reducing downtime by 40%, DevSecOps image scanning), saves record to `job_applications` with `status: 'planning'`, and returns mock result.
+  * *Gemini API Runtime / Parse Failure*: Logs `console.error('⚠️ Gemini AI Tailoring error:', error.message)` and throws error; `/apply` bot command catches and alerts user: `"⚠️ Error tailoring resume: <error_message>"`.
 
 #### C. STAR Interview Prep Generator (`src/services/interviewPrep.ts`)
 * **Owns**:
-  * Synthesizing 3 structured Situation-Task-Action-Result stories and technical interview questions for target role.
+  * Synthesizing structured Situation-Task-Action-Result stories and 3 high-probability technical interview questions for target role.
 * **Talks to**:
   * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`jobs`, `user_profile`).
 * **Does NOT own**:
   * Application tracking or state mutation.
 * **Failure Modes & Degradation**:
-  * *API Error*: Returns fallback generic STAR DevOps scenarios (CI/CD outage, Kubernetes migration, AWS IAM hardening).
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Returns 2 hardcoded STAR stories (Downtime reduction via Terraform/K8s CI/CD, and Container DevSecOps scanning via Trivy) plus 3 core technical questions (zero-downtime K8s rollouts, Terraform team state management, microservice secrets security).
+  * *Gemini API Runtime / Parse Failure*: Logs `console.error('⚠️ Interview prep generation error:', err.message)` and throws error; `/prep` bot command catches and alerts user: `"⚠️ Error generating interview prep: <error_message>"`.
 
 #### D. Application Form Answer Assistant (`src/services/applicationAnswers.ts`)
 * **Owns**:
-  * Generating grounded 60–120 word portal form answers matching candidate cloud experience.
+  * Generating grounded 60–120 word portal form answers matching candidate cloud experience to custom questions.
 * **Talks to**:
   * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`jobs`, `user_profile`).
 * **Does NOT own**:
   * Automated form submission into third-party applicant portals.
 * **Failure Modes & Degradation**:
-  * *API Error*: Surfaces error message on Telegram: `"⚠️ Error generating answer: <error_message>"`.
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Returns static template answer string referencing candidate's hands-on Kubernetes, Terraform, and cloud infrastructure experience.
+  * *Gemini API Runtime / Generation Failure*: Internal catch block logs `console.error('⚠️ Application answer error:', err.message)` and returns fallback string: `"I am enthusiastic about the ${role} role at ${company}. My technical background in Cloud Architecture, Kubernetes, and automated CI/CD enables me to add immediate value to your infrastructure team."` without throwing or crashing the bot.
 
 #### E. Document Checklist Generator (`src/services/checklistGenerator.ts`)
 * **Owns**:
-  * Extracting required admission items from programme notes and inserting structured tasks into `tasks` table.
+  * Extracting required admission items from programme notes, calculating due dates based on buffer days before deadline (`now + 3 months`), and inserting structured tasks into `tasks` table with `status: 'pending'`.
+  * Creating/getting `scholarship_applications` record with initial status `planning`.
 * **Talks to**:
-  * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`programmes`, `tasks`).
+  * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`programmes`, `scholarship_applications`, `tasks`, `user_profile`).
 * **Does NOT own**:
-  * Proactive deadline push notifications (tasks are stored in the database and queried on-demand via `/tasks`).
+  * Proactive background push reminders (tasks are stored in the database and queried on-demand via `/tasks`).
 * **Failure Modes & Degradation**:
-  * *API Error*: Inserts default standard 4-tier MSc task checklist (Transcripts, SOP, English Test, Reference Letters).
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Generates a fixed 6-task checklist (SOP draft [45d, urgent], Academic Recommendation Letters [40d, high], Official Transcripts & Apostille [35d, high], IELTS/TOEFL English test [30d, medium], Europass CV format [20d, medium], Online portal submission [7d, urgent]).
+  * *Gemini API Runtime / JSON Parse Failure*: Catches error, logs `console.error('⚠️ Gemini Checklist extraction error:', err.message)`, and falls back to a 2-task array (Draft SOP [30d, urgent], Recommendation letters [25d, high]), persisting tasks to `tasks` table.
 
 #### F. Statement of Purpose (SOP) Generator (`src/services/sopGenerator.ts`)
 * **Owns**:
-  * Drafting 500–700 word academic SOPs connecting DevOps experience to university research curriculum.
-  * Reading style guides from `user_profile.parsed_json.sop_sample`.
-  * Storing drafted SOP in `scholarship_applications.sop_draft`.
+  * Drafting 500–700 word academic SOPs connecting DevOps experience to university curriculum.
+  * Saving drafted SOP in `scholarship_applications.sop_draft` (with `status: 'planning'`).
 * **Talks to**:
   * Google Gemini API (`gemini-1.5-flash`), Supabase Client (`programmes`, `user_profile`, `scholarship_applications`).
 * **Does NOT own**:
   * University application submission.
 * **Failure Modes & Degradation**:
-  * *API Error*: Logs error and alerts user: `"⚠️ Error generating SOP: <error_message>"`.
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Generates structured template SOP referencing applicant name, target programme, university, and country; persists draft to `scholarship_applications`.
+  * *Gemini API Runtime Error*: Logs `console.error('⚠️ Gemini SOP Generator error:', err.message)` and throws error; `/sop` bot command catches and alerts user: `"⚠️ Error generating SOP: <error_message>"`.
 
 #### G. Weekly Metrics & Velocity Engine (`src/services/metricsEngine.ts`)
 * **Owns**:
-  * Aggregating 7-day funnel metrics: applications count, interviews, response latency (average days to interview), and ghosting rate (>14 days without status update).
+  * Aggregating 7-day funnel metrics: sourced jobs count (`gte('created_at', weekStart)`), applications count, responses count (`status = 'interview'`), active interviews count, outreach sent count (`status = 'sent'`), and email reply rate.
+  * Calculating ghosting rate as the percentage of `job_applications` older than 14 days still marked `applied`.
+  * Reporting baseline average response latency (constant `avgResponseDays = 4.5`).
   * Calling Gemini AI to produce strategic synthesis and insights summary.
   * Persisting weekly rollups into `metrics` table (`UNIQUE(category, week_start)`).
 * **Talks to**:
@@ -150,7 +159,8 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 * **Does NOT own**:
   * Daily scheduled task reminders.
 * **Failure Modes & Degradation**:
-  * *Gemini Synthesis Failure*: Returns raw numerical table without AI narrative block; database metrics record is still saved.
+  * *Missing `GEMINI_API_KEY` (`!genAI`)*: Formats deterministic metrics template string with counts, reply rate, 4.5d response latency, and ghosting rate; upserts record to `metrics`.
+  * *Gemini Synthesis Failure*: Catches error, logs `console.error('⚠️ Gemini Metrics digest error:', err.message)`, sets summary to concise numerical activity string, and completes upsert into `metrics` table.
 
 ---
 
@@ -159,18 +169,18 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 #### A. Recruiter Lead Discovery (`src/services/leadFinder.ts`)
 * **Owns**:
   * Proposing hiring manager / technical recruiter contact profiles based on target company.
-  * Inserting/reusing records in `contacts` table.
+  * Inserting or reusing records in `contacts` table (`name`, `role_title`, `company`, `email`, `confidence_score: 0.85`, `source: 'Automated Lead Finder'`).
 * **Talks to**:
   * Supabase Client (`contacts`).
 * **Does NOT own**:
   * Email sequence scheduling or dispatch.
 * **Failure Modes & Degradation**:
-  * *Database Error*: Returns in-memory generic `Hiring Lead <hiring@company.com>` object.
+  * *Database Error*: Throws `Error('Failed to create contact for company <company>')`, caught and reported by `/outreach` command handler.
 
 #### B. Outreach Email Service (`src/services/emailOutreach.ts`)
 * **Owns**:
-  * `draftPersonalizedEmail`: Generates 100-word cold email body via Gemini AI (or fallback templates).
-  * `scheduleOutreachEmail`: Inserts an outreach record into `email_outreach` with `status: 'scheduled'` and `follow_up_sequence_id: 1` (invoked by `/outreach` command).
+  * `draftPersonalizedEmail`: Generates cold email draft via Gemini AI or 4-stage fallback templates (Stage 1: initial outreach, Stage 2: short reminder, Stage 3: value-add project link, Stage 4: breakup email).
+  * `scheduleOutreachEmail`: Inserts an outreach record into `email_outreach` with `status: 'scheduled'`, `channel: 'email'`, and `follow_up_sequence_id: sequenceStage` (invoked by `/outreach` command).
   * `sendOutreachEmail`: Helper method to dispatch emails via Resend API using `OUTREACH_SENDER_EMAIL` (default `'onboarding@resend.dev'`), updating status to `'sent'` on success or `'bounced'` on error.
   * `cancelSequenceOnReply`: Helper method to update pending records for a contact to `status: 'cancelled'`.
 * **Talks to**:
@@ -178,7 +188,7 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 * **Does NOT own (Explicit Boundary)**:
   * Automated background dispatch daemon or external inbound webhook receiver (the codebase schedules Stage 1 records upon `/outreach`; `sendOutreachEmail` and `cancelSequenceOnReply` are defined service functions with no active background scheduler or webhook daemon wired in runtime).
 * **Failure Modes & Degradation**:
-  * *Missing RESEND_API_KEY*: Simulates send and transitions status to `'sent'` with console warning.
+  * *Missing `RESEND_API_KEY` (`!resend`)*: Simulates email send and transitions status to `'sent'` with console warning.
   * *Resend API Error*: Transitions status to `'bounced'` in `email_outreach`.
 
 ---
@@ -187,10 +197,10 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 
 #### A. Telegraf Telegram Bot Worker (`src/bot/index.ts`)
 * **Owns**:
-  * Private user authentication (`TELEGRAM_ALLOWED_USER_ID`).
-  * Startup sweeps (runs `runJobSourcingPipeline`, `runScholarshipSourcingPipeline`, `checkJobsLiveness` at startup).
+  * Private user authorization middleware (`TELEGRAM_ALLOWED_USER_ID`).
+  * Startup sweeps (runs `runJobSourcingPipeline`, `runScholarshipSourcingPipeline`, `checkJobsLiveness` after 5-second initial delay).
   * Recurring schedulers: `setInterval` for job sourcing (every 6 hours) and `setInterval` for liveness checks (every 24 hours).
-  * Registering all command handlers and text message listeners.
+  * Command dispatch and text message listeners.
 * **Talks to**:
   * Telegram Bot API (Long Polling via `bot.launch()`), Internal services in `src/services/`, Supabase Client.
 * **Does NOT own**:
@@ -200,11 +210,11 @@ All AI services instantiate `GoogleGenerativeAI({ model: 'gemini-1.5-flash' })` 
 
 #### B. Web Dashboard (`dashboard/index.html` on Nginx `:8080`)
 * **Owns**:
-  * Client-side visual Kanban board (`Planning`, `Applied`, `Interviewing`, `Offers`).
+  * Client-side visual Kanban board (`Planning`, `Applied`, `Interviewing`, `Offers`) and data tables for MSc programmes and outreach records.
 * **Talks to**:
-  * Supabase REST API via JavaScript client.
+  * Supabase REST API via `@supabase/supabase-js` browser client.
 * **Does NOT own**:
-  * Backend AI dispatch or automated syncing.
+  * Backend AI dispatch or automated background syncing.
 * **Failure Modes & Degradation**:
   * *Supabase Connection Drop*: Renders empty cards with reload prompt.
 
@@ -240,11 +250,13 @@ The system is deployed on a Contabo Linux VPS using Docker Compose alongside exi
 
 ---
 
-## 4. Verbatim Telegram Command Registry
+## 4. Verbatim Telegram Command & Interface Registry
 
-The Telegram bot (`src/bot/index.ts`) explicitly registers the following **17 command handlers and listeners**:
+The Telegram bot (`src/bot/index.ts`) registers command handlers, message listeners, and advertised help menu actions as follows:
 
-| Command Handler | Registration Type | Functional Purpose |
+### 4.1 Registered Command Handlers & Listeners
+
+| Command / Handler | Registration Type | Functional Purpose |
 | :--- | :--- | :--- |
 | `/start` | `bot.start` | Initializes user session and outputs welcome guidance. |
 | `/help` | `bot.help` | Prints complete command reference manual across all pipelines. |
@@ -252,18 +264,43 @@ The Telegram bot (`src/bot/index.ts`) explicitly registers the following **17 co
 | `/check_liveness`| `bot.command('check_liveness')` | Runs HTTP probe on open jobs, marking 404/expired postings as `closed`. |
 | `/dashboard` | `bot.command('dashboard')` | Returns aggregated count metrics across jobs, applications, and tasks. |
 | `/jobs` | `bot.command('jobs')` | Queries open jobs and dynamically computes 1–5⭐ Gemini match scores. |
-| `/apply` | `bot.command('apply')` | Tailors CV summary & bullets for specific `job_id`, creating application record. |
-| `/prep` | `bot.command('prep')` | Generates 3 STAR-method interview stories & technical questions for `job_id`. |
-| `/answer` | `bot.command('answer')` | Drafts grounded 60–120 word response for custom portal form question. |
-| `/outreach` | `bot.command('outreach')` | Discovers recruiter lead and schedules initial cold email draft in database. |
+| `/apply <job_id>` | `bot.command('apply')` | Tailors CV summary & bullets for `job_id`, creating `job_applications` record with status `planning`. |
+| `/prep <job_id>` | `bot.command('prep')` | Generates STAR-method interview stories & technical questions for `job_id`. |
+| `/answer <job_id> <q>` | `bot.command('answer')` | Drafts grounded 60–120 word response for custom portal form question. |
+| `/outreach <job_id>` | `bot.command('outreach')` | Discovers recruiter lead and schedules initial cold email draft in database. |
 | `/schools` | `bot.command('schools')` | Queries and lists tracked European & UK MSc programmes. |
 | `/scholarships` | `bot.command('scholarships')` | Queries and lists fully-funded scholarships ordered by deadline. |
-| `/checklist` | `bot.command('checklist')` | Generates AI document preparation checklist and saves items to `tasks`. |
-| `/sop` | `bot.command('sop')` | Generates tailored 600-word academic Statement of Purpose for `school_id`. |
-| `/sop_sample` | `bot.command('sop_sample')` | Stores user's authentic writing style sample in `user_profile.parsed_json`. |
+| `/checklist <school_id>` | `bot.command('checklist')` | Generates AI document preparation checklist and saves items to `tasks`. |
+| `/sop <school_id>` | `bot.command('sop')` | Generates tailored Statement of Purpose for `school_id` and saves to `scholarship_applications`. |
 | `/tasks` | `bot.command('tasks')` | Queries and lists active checklist tasks from `tasks` table on demand. |
 | `/report` | `bot.command('report')` | Computes 7-day velocity, response latency, ghosting rates, and AI synthesis. |
-| *Direct CV Text*| `bot.on('text')` | Intercepts pasted CV text (>100 chars) and updates `user_profile.raw_resume_text`. |
+| `/sop_sample <text>` | `bot.command('sop_sample')` | Stores user's writing style sample in `user_profile.parsed_json`. |
+| *Direct CV Text Paste*| `bot.on('text')` | Intercepts pasted CV text (>100 chars) and updates `user_profile.raw_resume_text`. |
+
+### 4.2 Advertised `/help` Menu Actions & Resolution Mapping
+
+The bot's `/help` text advertises 17 command entries to users. The table below maps each advertised command to its implementation resolution in the codebase:
+
+| Advertised `/help` Command | Advertised Description | Code Implementation Resolution |
+| :--- | :--- | :--- |
+| `/jobs` | Show recent DevOps jobs with 1-5⭐ score & skill gaps | Handled by `bot.command('jobs')`. |
+| `/jobs_remote` | Show remote-only job listings | Advertised in `/help`; listings sourced via `/jobs` are all remote-tagged (`is_remote: true`). |
+| `/fetch_jobs` | Run automated job scrapers now | Handled by `bot.command('fetch_jobs')`. |
+| `/check_liveness` | Verify open job links & mark expired as closed | Handled by `bot.command('check_liveness')`. |
+| `/apply <job_id>` | Tailor CV & create application record | Handled by `bot.command('apply')`. |
+| `/prep <job_id>` | STAR Method interview prep stories | Handled by `bot.command('prep')`. |
+| `/answer <job_id> <q>` | Answer portal form questions | Handled by `bot.command('answer')`. |
+| `/outreach <job_id>` | Discover recruiter & schedule email | Handled by `bot.command('outreach')`. |
+| `/outreach_pending` | Show cold emails waiting to send | Advertised in `/help`; pending cold emails are stored with `status: 'scheduled'` in `email_outreach` table and viewed on the Web Dashboard `/tab-outreach`. |
+| `/schools` | Show upcoming MSc programmes | Handled by `bot.command('schools')`. |
+| `/scholarships` | Show fully-funded scholarships | Handled by `bot.command('scholarships')`. |
+| `/fetch_schools` | Run school sourcing sweep | Advertised in `/help`; scholarship sourcing executes automatically once at startup via `runScholarshipSourcingPipeline()`. |
+| `/checklist <school_id>` | Generate AI task checklist | Handled by `bot.command('checklist')`. |
+| `/sop <school_id>` | Generate Statement of Purpose (SOP) | Handled by `bot.command('sop')`. |
+| `/dashboard` | Live 7-day pipeline summary | Handled by `bot.command('dashboard')`. |
+| `/tasks` | Daily tasks & deadline checklist | Handled by `bot.command('tasks')`. |
+| `/report` | Weekly AI synthesis & funnel velocity digest | Handled by `bot.command('report')`. |
+| `/resume` | View or update your base CV profile | Advertised in `/help`; handled by direct CV text paste listener `bot.on('text')` which updates `user_profile.raw_resume_text`. |
 
 ---
 
