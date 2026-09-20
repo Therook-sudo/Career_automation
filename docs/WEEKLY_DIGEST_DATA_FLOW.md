@@ -100,10 +100,16 @@ In `metricsEngine.ts:38-48`, the service executes 8 sequential `await` queries a
 | **2** | **`applicationsSentCount`** | `job_applications` | `.gte('created_at', weekStartStr)` | Past 7 Days (`[now-7d, now]`) | Tailoring & submission activity |
 | **3** | **`responsesReceivedCount`** | `job_applications` | `.eq('status', 'interview').gte('last_update', weekStartStr)` | Past 7 Days (`[now-7d, now]`) | Fresh positive interviewer transitions |
 | **4** | **`interviewsCount`** | `job_applications` | `.eq('status', 'interview')` | **All-Time Active Snapshot** | Current active interview pipeline load |
-| **5** | **`outreachSentCount`** | `email_outreach` | `.eq('status', 'sent').gte('sent_at', weekStartStr)` | Past 7 Days (`[now-7d, now]`) | Outbound recruiter outreach volume |
-| **6** | **`outreachRepliedCount`** | `email_outreach` | `.eq('status', 'replied').gte('created_at', weekStartStr)` | Past 7 Days (`[now-7d, now]`) | Positive recruiter engagement count |
+| **5** | **`outreachSentCount`** | `email_outreach` | `.eq('status', 'sent').gte('sent_at', weekStartStr)` | Past 7 Days (`sent_at >= weekStart`) | Outbound recruiter outreach volume |
+| **6** | **`outreachRepliedCount`** | `email_outreach` | `.eq('status', 'replied').gte('created_at', weekStartStr)` | Outreach Created in Past 7 Days (`created_at >= weekStart`) | Cohort-filtered recruiter engagement count |
 | **7** | **`totalOlderApps`** | `job_applications` | `.lte('created_at', fourteenDaysAgo.toISOString())` | Created $\ge 14$ days ago | Denominator for ghosting rate |
 | **8** | **`ghostedApps`** | `job_applications` | `.eq('status', 'applied').lte('created_at', fourteenDaysAgo.toISOString())` | Created $\ge 14$ days ago | Unresponsive applications numerator |
+
+> **Architectural Note on `outreachRepliedCount` & Cohort Filtering**:
+> In `metricsEngine.ts:43`, `outreachRepliedCount` filters by `.gte('created_at', weekStartStr)` rather than a reply event timestamp. This occurs because `email_outreach` in `supabase/schema.sql` lacks a dedicated `replied_at` column. Consequently:
+> * It measures a **7-day creation cohort** (how many outreach records *created in the past 7 days* currently have `status = 'replied'`).
+> * If a recruiter replies today to an email created 3 weeks ago (`created_at < weekStart`), that reply is **filtered out** of `outreachRepliedCount` for this week.
+> * Calculating `emailReplyRate = (outreachRepliedCount / outreachSentCount) * 100` with this cohort filter avoids mathematical anomalies ($> 100\%$ reply rates when low weekly send volume meets lagged replies), but introduces right-censoring lag on newly created campaigns. In Section 5, we specify adding `replied_at` and migrating conversion tracking to a mature cohort baseline.
 
 ---
 
