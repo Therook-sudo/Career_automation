@@ -5,8 +5,8 @@
 This document defines the complete end-to-end data flow for the **Scholarship and MSc Programme Tracker** within Path Pilot. 
 
 Unlike the career pipeline—which operates on high-frequency scraping of fast-decaying job listings—the scholarship pipeline operates on a **curated seasonal intake and deadline-driven pattern**:
-1. **Fixed-Horizon Intake**: Seeded and sourced university programmes with static application windows.
-2. **Reverse Deadline Scheduling**: Admission deadlines are dynamically translated into prioritized action items with calculated intermediate due dates.
+1. **Fixed-Horizon Intake**: Seeded university programmes and linked scholarship opportunities with static application deadlines.
+2. **Reverse Deadline Scheduling**: Admission tasks are scheduled backwards against an internal baseline (`now + 3 months`) using extracted buffer days.
 3. **Application State & Asset Tracking**: Generates structured document checklists in `tasks` and customized Statement of Purpose (SOP) drafts in `scholarship_applications`.
 
 All components, database schemas, and service contracts align strictly with [`docs/COMPONENT_MAP.md`](./COMPONENT_MAP.md).
@@ -27,7 +27,7 @@ sequenceDiagram
     participant SOP as SOP Generator<br/>(sopGenerator.ts)
     participant LLM as Google Gemini API<br/>(gemini-1.5-flash)
 
-    Note over Seed,Fetcher: Step 1: Programme & Scholarship Sourcing (Startup / On-Demand)
+    Note over Seed,Fetcher: Step 1: Programme & Scholarship Sourcing (Startup Sweep Only)
     Fetcher->>Seed: Read SEED_PROGRAMMES array
     Fetcher->>DB: UPSERT into programmes (onConflict: main_link)
     DB-->>Fetcher: Programme record persisted
@@ -54,8 +54,9 @@ sequenceDiagram
         Checklist->>DB: SELECT / INSERT scholarship_applications (status: 'planning')
         Checklist->>LLM: Extract tasks with bufferDaysBeforeDeadline & priority
         LLM-->>Checklist: JSON array [{ description, bufferDaysBeforeDeadline, priority }]
+        Note over Checklist,DB: Computes dueDate = (now + 3m) - bufferDays (Independent of scholarships.deadline)
         loop For Each Task
-            Checklist->>DB: INSERT into tasks (due_date: targetDeadline - bufferDays, status: 'pending')
+            Checklist->>DB: INSERT into tasks (due_date: dueDate, status: 'pending')
         end
         Checklist-->>Bot: Task[] array
         Bot->>User: Render numbered checklist with priorities and calculated due dates
@@ -64,7 +65,8 @@ sequenceDiagram
         User->>Bot: /sop <school_id>
         Bot->>User: "✍️ Generating Tailored Statement of Purpose (SOP) for School ID: <school_id>..."
         Bot->>SOP: generateSopForProgramme(schoolId)
-        SOP->>DB: SELECT programme & user_profile (raw_resume_text, sop_sample)
+        Note over SOP,DB: Reads only raw_resume_text & full_name (sop_sample is not consumed)
+        SOP->>DB: SELECT programme & user_profile (raw_resume_text, full_name)
         DB-->>SOP: Candidate experience & Programme curriculum
         SOP->>LLM: Generate 500-700 word academic SOP
         LLM-->>SOP: Academic Statement of Purpose text
@@ -85,13 +87,14 @@ sequenceDiagram
 ## 3. Detailed Step-by-Step Data Flow
 
 ### Step 1: Programme & Scholarship Sourcing
-* **Trigger Type**: Executed once automatically after container startup (with a 5-second initial delay) via `runScholarshipSourcingPipeline()`, or referenced via `/help` menu as `/fetch_schools`.
+* **Trigger Type**: Executed **strictly once automatically at container startup** (with a 5-second initial delay) via `runScholarshipSourcingPipeline()`. 
+  > *Implementation Note*: While `/fetch_schools` is advertised in the bot's `/help` menu, it has **no registered `bot.command('fetch_schools')` handler** in `src/bot/index.ts` and cannot be triggered on demand via slash command.
 * **Executing Component**: `Scholarship Sourcing Engine` (`src/services/scholarshipFetcher.ts`).
 * **Input Data**:
   * `SEED_PROGRAMMES` hardcoded array containing European MSc opportunities (e.g., SECCLO Erasmus Mundus, TU Delft Cloud Computing, KTH Cybersecurity, DAAD Germany).
 * **Internal Processing**:
   1. Iterates over seed items and executes `UPSERT` on the `programmes` table using `onConflict: 'main_link'`.
-  2. For fully funded programmes (`is_fully_funded: true`), dynamically computes a target application deadline (`now + 4 months`).
+  2. For fully funded programmes (`is_fully_funded: true`), dynamically computes a target application deadline of **`now + 4 months`** (`deadlineDate.setMonth(now.getMonth() + 4)`).
   3. Upserts linked scholarship records into the `scholarships` table using `onConflict: 'application_link'`.
 * **Database Mutations**:
   * **`programmes`**: `name`, `university`, `country`, `field`, `degree_level`, `tuition_fee`, `is_fully_funded`, `duration`, `main_link`, `notes`.
@@ -119,7 +122,7 @@ sequenceDiagram
     🆔 ID: `4f3e2b1a-9c8d-4e7f-b2a1-0e9d8c7b6a5f`
     🔗 [Programme Link](https://secclo.aalto.fi/)
     ```
-  * `/scholarships` renders fully funded scholarship deadlines:
+  * `/scholarships` renders fully funded scholarship deadlines (displaying the `now + 4 months` deadline from `scholarships.deadline`):
     ```text
     🏆 Fully-Funded Scholarships
 
@@ -138,7 +141,7 @@ sequenceDiagram
   * The user can trigger two distinct action paths:
     1. **Checklist Generation**: `/checklist <school_id>` to convert admission criteria into scheduled tasks.
     2. **SOP Generation**: `/sop <school_id>` to synthesize a university-specific Statement of Purpose.
-    3. **Tone Calibration (Optional)**: `/sop_sample <text>` to save custom writing style samples in `user_profile.parsed_json.sop_sample`.
+    3. **Tone Calibration**: `/sop_sample <text>` to save custom writing style samples in `user_profile.parsed_json.sop_sample`. *(Note: Saved to database, but not currently read by `sopGenerator.ts`)*.
 
 ---
 
@@ -159,7 +162,13 @@ sequenceDiagram
        date_started: new Date().toISOString()
      })
      ```
-  3. Establishes target application baseline deadline: `targetDeadline = now + 3 months` (90-day buffer).
+  3. **Baseline Deadline Derivation & Decoupling**:
+     * `checklistGenerator.ts:40-41` instantiates its own internal baseline deadline:
+       ```typescript
+       const targetDeadline = new Date();
+       targetDeadline.setMonth(targetDeadline.getMonth() + 3); // 90 days default buffer
+       ```
+     * **Architectural Trace**: `checklistGenerator.ts` queries only the `programmes` table. It **does not read the `scholarships.deadline`** (`now + 4 months`) displayed in `/scholarships`. Task due dates are calculated independently against this internal `now + 3 months` baseline.
 * **AI Extraction (`gemini-1.5-flash`)**:
   * Sends structured prompt with programme curriculum, university details, and funding status.
   * Requests JSON array of tasks with `bufferDaysBeforeDeadline` and `priority`:
@@ -175,7 +184,7 @@ sequenceDiagram
     ```
 * **Reverse Due Date Calculation & Persistence**:
   * For each task item, computes:
-    $$\text{dueDate} = \text{targetDeadline} - \text{bufferDaysBeforeDeadline}$$
+    $$\text{dueDate} = (\text{now} + 3\text{ months}) - \text{bufferDaysBeforeDeadline}$$
   * Inserts record into `tasks` table:
     * `entity_type`: `'scholarship'`
     * `entity_id`: `scholarship_applications.id` (or `programmeId`)
@@ -194,7 +203,8 @@ sequenceDiagram
 * **Input Data Received**:
   1. `schoolId`: String UUID.
   2. Queries `programmes` table for target university, country, degree level, and field.
-  3. Queries `user_profile` table for `candidateName`, `raw_resume_text`, and optional `sop_sample` style preferences.
+  3. Queries `user_profile` table for `candidateName` (`user_profile.full_name`) and `rawProfile` (`user_profile.raw_resume_text`).
+  > *Architectural Note*: While `/sop_sample <text>` updates `user_profile.parsed_json.sop_sample`, `sopGenerator.ts:20-23` reads only `full_name` and `raw_resume_text`. The `parsed_json.sop_sample` field is **not consumed** by the prompt generator.
 * **AI Orchestration & Prompt Guardrails**:
   * Prompts `gemini-1.5-flash` to author a 500–700 word academic SOP following a 5-stage structure:
     1. *Introduction & Hook*: Expressing passion for the specific university and degree.
@@ -256,9 +266,9 @@ The table below catalogs every potential failure mode across the scholarship lif
 
 | Stage | Producer Component | Consumer Component | Input Data Contract | Output Data Contract |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. Seed & Sourcing** | `SEED_PROGRAMMES` constant | `scholarshipFetcher.ts` | Hardcoded array of European MSc opportunities | `programmes` records (`onConflict: 'main_link'`) & `scholarships` records (`onConflict: 'application_link'`) |
-| **2. Discovery** | `programmes` & `scholarships` tables | Candidate (Telegram User) | User commands `/schools` or `/scholarships` | Formatted opportunity cards with funding status, deadlines, and UUIDs |
+| **1. Seed & Sourcing** | `SEED_PROGRAMMES` constant | `scholarshipFetcher.ts` | Hardcoded array of European MSc opportunities | `programmes` records (`onConflict: 'main_link'`) & `scholarships` records (`onConflict: 'application_link'`, `deadline = now + 4m`) |
+| **2. Discovery** | `programmes` & `scholarships` tables | Candidate (Telegram User) | User commands `/schools` or `/scholarships` | Formatted opportunity cards with funding status, deadlines (`now + 4m`), and UUIDs |
 | **3. Decision** | Discovery card outputs | Candidate (Telegram User) | Target `school_id` UUID | `/checklist <school_id>`, `/sop <school_id>`, or `/sop_sample <text>` |
-| **4. Checklist Engine** | `checklistGenerator.ts` & `gemini-1.5-flash` | `tasks` & `scholarship_applications` tables | Target `programme` record & `user_profile` | `scholarship_applications` record (`status: 'planning'`) and multiple `tasks` records with calculated `due_date` values |
-| **5. SOP Engine** | `sopGenerator.ts` & `gemini-1.5-flash` | `scholarship_applications` table & User | Target `programme` record, `user_profile`, and optional `sop_sample` | `scholarship_applications.sop_draft` (500–700 word academic essay) and Telegram preview snippet |
+| **4. Checklist Engine** | `checklistGenerator.ts` & `gemini-1.5-flash` | `tasks` & `scholarship_applications` tables | Target `programme` record & `user_profile` (independent baseline: `now + 3m`) | `scholarship_applications` record (`status: 'planning'`) and multiple `tasks` records with calculated `due_date = (now + 3m) - bufferDays` |
+| **5. SOP Engine** | `sopGenerator.ts` & `gemini-1.5-flash` | `scholarship_applications` table & User | Target `programme` record & `user_profile` (`full_name`, `raw_resume_text`) | `scholarship_applications.sop_draft` (500–700 word academic essay) and Telegram preview snippet |
 | **6. Task Tracking** | `tasks` table | Candidate (Telegram User) | `/tasks` command | 5 nearest pending tasks sorted chronologically by `due_date` |
