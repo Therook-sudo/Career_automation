@@ -152,10 +152,10 @@ sequenceDiagram
   1. `schoolId`: String UUID from command parameter.
   2. Queries `programmes` table: `SELECT * FROM programmes WHERE id = schoolId`.
   3. Queries `user_profile` table via `getBaseProfile()`: `SELECT * FROM user_profile LIMIT 1`.
-  4. Queries and creates/updates `scholarship_applications` table: `SELECT id FROM scholarship_applications WHERE programme_id = schoolId`.
+  4. Queries `scholarship_applications` table: `SELECT id FROM scholarship_applications WHERE programme_id = schoolId`.
 * **Internal Processing & Application Record**:
   1. Checks for existing record in `scholarship_applications` table where `programme_id = schoolId`.
-  2. If absent, creates a new record:
+  2. **Conditional Insert Only (No Updates)**: If no record exists, inserts an initial planning record:
      ```typescript
      supabase.from('scholarship_applications').insert({
        programme_id: schoolId,
@@ -163,6 +163,7 @@ sequenceDiagram
        date_started: new Date().toISOString()
      })
      ```
+     > *Architectural Contract*: `checklistGenerator.ts:30-38` performs **only a `SELECT id` and a conditional `INSERT`** when no record exists. It **never issues an `UPDATE`** against `scholarship_applications` (the only component that executes an `UPDATE` on `scholarship_applications` is `sopGenerator.ts:saveSopDraft` when persisting drafted SOP text). Subsequent `/checklist` invocations for the same school leave the existing application row untouched and insert a fresh batch of pending tasks linked to that application ID.
   3. **Baseline Deadline Derivation & Decoupling**:
      * `checklistGenerator.ts:40-41` instantiates its own internal baseline deadline:
        ```typescript
@@ -217,8 +218,8 @@ sequenceDiagram
     5. *Tone*: Formal, scholarly, ambitious, and authentic.
 * **State Persistence**:
   * Saves complete drafted essay to `scholarship_applications` table:
-    * If record exists for `programme_id`: `UPDATE scholarship_applications SET sop_draft = sopText WHERE id = existing.id`.
-    * If new: `INSERT INTO scholarship_applications (programme_id, status, sop_draft, date_started) VALUES (programmeId, 'planning', sopText, now())`.
+    * If record exists for `programme_id`: `UPDATE scholarship_applications SET sop_draft = sopText WHERE id = existing.id` (`sopGenerator.ts:80-83`).
+    * If new: `INSERT INTO scholarship_applications (programme_id, status, sop_draft, date_started) VALUES (programmeId, 'planning', sopText, now())` (`sopGenerator.ts:85-90`).
 * **User-Facing Delivery**:
   * Bot delivers a formatted message containing the first 800 characters of the drafted SOP, confirming full persistence under the `scholarship_applications` record.
 
@@ -254,7 +255,7 @@ The table below catalogs every potential failure mode across the scholarship lif
 | Scenario / Failure Condition | Triggering Step | Handling Mechanism & Fallback | Verbatim Telegram / Console Reply |
 | :--- | :--- | :--- | :--- |
 | **Missing Command Argument** | Candidate sends `/checklist` or `/sop` without a UUID. | `src/bot/index.ts:391-393` and `419-421` validate argument presence before querying database. | `⚠️ Usage: /checklist <school_id>`<br>`⚠️ Usage: /sop <school_id>` |
-| **Non-Existent School ID** | Candidate supplies invalid or non-existent UUID: `/checklist 00000000-0000-0000-0000-000000000000`. | `checklistGenerator.ts:23-25` queries `programmes` table; throws `Error("Programme with ID <id> not found.")`. Caught by command handler. | `⚠️ Error generating checklist: Programme with ID 00000000-0000-0000-0000-000000000000 not found.`<br>`⚠️ Error generating SOP: Programme with ID 00000000-0000-0000-0000-000000000000 not found.` |
+| **Non-Existent School ID** | Candidate supplies invalid or non-existent UUID to either `/checklist <invalid_id>` or `/sop <invalid_id>`. | `checklistGenerator.ts:23-25` (`/checklist`) and `sopGenerator.ts:16-18` (`/sop`) query the `programmes` table; both throw `Error("Programme with ID <id> not found.")`. Command handlers in `src/bot/index.ts:408-411` and `433-436` catch the exception and format user-facing alerts. | `⚠️ Error generating checklist: Programme with ID 00000000-0000-0000-0000-000000000000 not found.`<br>`⚠️ Error generating SOP: Programme with ID 00000000-0000-0000-0000-000000000000 not found.` |
 | **Empty Database Tables** | Candidate executes `/schools` or `/scholarships` before startup seed runs. | `src/bot/index.ts:335-337` and `366-368` check for empty query arrays and return guidance. | `📭 No MSc programmes stored in database yet. Use /fetch_schools to load opportunities!`<br>`📭 No scholarships found in database yet. Use /fetch_schools to populate!` |
 | **No Pending Tasks Due** | Candidate executes `/tasks` when all tasks are complete or none exist. | `src/bot/index.ts:451-453` checks `tasks` query count. | `🎉 No pending tasks due! You are all caught up.` |
 | **Missing `GEMINI_API_KEY` (Checklist)** | Checklist generated without Gemini API credentials configured. | `checklistGenerator.ts:45-54` detects `!genAI` and falls back to a deterministic 6-task standard checklist (SOP [45d, urgent], Reference Letters [40d, high], Transcripts [35d, high], IELTS [30d, medium], Europass CV [20d, medium], Portal Form [7d, urgent]). | Renders standard 6-task checklist with calculated due dates; saves items to `tasks` table with `status: 'pending'`. |
