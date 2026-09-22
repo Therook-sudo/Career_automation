@@ -100,17 +100,31 @@ async function fetchRemoteOKJobs(): Promise<Partial<Job>[]> {
  */
 async function fetchWeWorkRemotelyJobs(): Promise<Partial<Job>[]> {
   try {
-    const feed = await rssParser.parseURL('https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss');
+    const feedUrl = 'https://weworkremotely.com/categories/remote-devops-sysadmin-jobs.rss';
+    let feed;
+    try {
+      const res = await axios.get(feedUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          'Accept': 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+        },
+        timeout: 10000
+      });
+      feed = await rssParser.parseString(res.data);
+    } catch {
+      feed = await rssParser.parseURL(feedUrl);
+    }
+
     const results: Partial<Job>[] = [];
 
     for (const item of feed.items) {
-      const title = item.title || '';
-      const description = item.content || item.summary || '';
+      const rawTitle = (item.title || '').trim();
+      const description = (item.content || item.summary || '').trim();
       
       let company = 'Unknown';
-      let cleanTitle = title;
-      if (title.includes(':')) {
-        const parts = title.split(':');
+      let cleanTitle = rawTitle;
+      if (rawTitle.includes(':')) {
+        const parts = rawTitle.split(':');
         company = parts[0].trim();
         cleanTitle = parts.slice(1).join(':').trim();
       }
@@ -154,21 +168,36 @@ async function fetchGoogleAlertsJobs(): Promise<Partial<Job>[]> {
     urls.push(...parsed);
   }
 
-  // 2. Read from config/google_alerts.txt if present
-  const configPath = path.join(process.cwd(), 'config', 'google_alerts.txt');
-  if (fs.existsSync(configPath)) {
-    try {
-      const fileContent = fs.readFileSync(configPath, 'utf8');
-      const fileUrls = fileContent.split(/\r?\n/).map((u) => u.trim()).filter((u) => u && !u.startsWith('#'));
-      urls.push(...fileUrls);
-    } catch (err: any) {
-      console.warn('⚠️ Could not read config/google_alerts.txt:', err.message);
+  // 2. Read from config/google_alerts.txt across multiple possible execution paths
+  const candidatePaths = [
+    path.join(process.cwd(), 'config', 'google_alerts.txt'),
+    path.join(__dirname, '..', '..', 'config', 'google_alerts.txt'),
+    path.join(__dirname, '..', 'config', 'google_alerts.txt'),
+    path.resolve('config/google_alerts.txt')
+  ];
+
+  for (const cPath of candidatePaths) {
+    if (fs.existsSync(cPath)) {
+      try {
+        const fileContent = fs.readFileSync(cPath, 'utf8');
+        const fileUrls = fileContent
+          .split(/\r?\n/)
+          .map((u) => u.trim())
+          .filter((u) => u && !u.startsWith('#') && u.startsWith('http'));
+        urls.push(...fileUrls);
+        if (urls.length > 0) break;
+      } catch (err: any) {
+        console.warn(`⚠️ Could not read ${cPath}:`, err.message);
+      }
     }
   }
 
   // Deduplicate URLs
   const uniqueUrls = Array.from(new Set(urls));
-  if (uniqueUrls.length === 0) return [];
+  if (uniqueUrls.length === 0) {
+    console.log('ℹ️ No Google Alerts RSS URLs configured.');
+    return [];
+  }
 
   console.log(`📡 Fetching from ${uniqueUrls.length} Google Alerts RSS feed(s)...`);
   const allResults: Partial<Job>[] = [];
@@ -176,20 +205,56 @@ async function fetchGoogleAlertsJobs(): Promise<Partial<Job>[]> {
   await Promise.allSettled(
     uniqueUrls.map(async (feedUrl) => {
       try {
-        const feed = await rssParser.parseURL(feedUrl);
-        for (const item of feed.items) {
-          const title = (item.title || '').replace(/<[^>]*>?/gm, ''); // Clean HTML
-          const description = (item.content || item.summary || '').replace(/<[^>]*>?/gm, '');
+        let feed;
+        try {
+          const res = await axios.get(feedUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'Accept': 'application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8'
+            },
+            timeout: 10000
+          });
+          feed = await rssParser.parseString(res.data);
+        } catch {
+          feed = await rssParser.parseURL(feedUrl);
+        }
 
-          if (isRelevantJob(title, description)) {
+        for (const item of feed.items) {
+          const rawTitle = (item.title || '').replace(/<[^>]*>?/gm, '').trim();
+          const description = (item.content || item.summary || '').replace(/<[^>]*>?/gm, '').trim();
+
+          // Extract clean destination URL if Google Alerts tracking redirect
+          let jobUrl = item.link || item.guid || '';
+          if (jobUrl.includes('google.com/url?') && jobUrl.includes('url=')) {
+            try {
+              const parsedUrl = new URL(jobUrl);
+              const target = parsedUrl.searchParams.get('url');
+              if (target) jobUrl = target;
+            } catch {}
+          }
+
+          // Extract company from title if "Job Title - Company" or "Job Title | Company"
+          let company = 'Google Alerts Lead';
+          let title = rawTitle;
+          if (rawTitle.includes(' - ')) {
+            const parts = rawTitle.split(' - ');
+            title = parts[0].trim();
+            company = parts.slice(1).join(' - ').trim();
+          } else if (rawTitle.includes(' | ')) {
+            const parts = rawTitle.split(' | ');
+            title = parts[0].trim();
+            company = parts.slice(1).join(' | ').trim();
+          }
+
+          if (isRelevantJob(rawTitle, description)) {
             allResults.push({
               title: title || 'DevOps Opportunity',
-              company: 'Google Alerts Source',
+              company,
               location: 'Remote / Unspecified',
               is_remote: true,
-              tech_stack_tags: extractTechTags(title, description),
+              tech_stack_tags: extractTechTags(rawTitle, description),
               source: 'Google Alerts',
-              job_url: item.link || item.guid || '',
+              job_url: jobUrl,
               description,
               posted_date: item.pubDate ? new Date(item.pubDate).toISOString() : new Date().toISOString(),
               status: 'open'

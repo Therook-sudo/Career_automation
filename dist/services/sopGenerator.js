@@ -20,8 +20,9 @@ async function generateSopForProgramme(programmeId) {
         throw new Error(`Programme with ID ${programmeId} not found.`);
     }
     const userProfile = await (0, aiTailor_1.getBaseProfile)();
-    const candidateName = userProfile?.full_name || 'Candidate';
-    const rawProfile = userProfile?.raw_resume_text || 'DevOps & Cloud Engineer with experience in Kubernetes, Terraform, AWS, and Security.';
+    const candidateName = userProfile?.full_name || 'Chukwuemeka Abiodun Ezeliora';
+    const rawProfile = userProfile?.raw_resume_text || 'First Class Honours (4.76/5.00 CGPA) Computer Science graduate and DevOps & Cloud Engineer with experience in Kubernetes, Terraform, AWS, and Security.';
+    const sampleStyle = userProfile?.parsed_json?.sop_sample || '';
     if (!genAI) {
         // Fallback SOP draft template
         const fallbackSop = `STATEMENT OF PURPOSE\n\n` +
@@ -36,7 +37,7 @@ async function generateSopForProgramme(programmeId) {
     }
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     const prompt = `
-You are an expert academic advisor writing a compelling, professional Statement of Purpose (SOP) for a Masters degree application.
+You are an expert academic advisor writing an authentic, publication-grade Statement of Purpose (SOP) for an elite European Masters degree application.
 
 Applicant Name: ${candidateName}
 Target Programme: ${programme.name}
@@ -46,13 +47,21 @@ Funding Focus: ${programme.is_fully_funded ? 'Erasmus Mundus / Fully Funded Scho
 
 Candidate Background:
 ${rawProfile}
+${sampleStyle ? `
+CANDIDATE'S PREFERRED WRITING VOICE & SAMPLE STYLE GUIDE:
+Critically adopt the narrative cadence, emotional resonance, paragraph transitions, and structure demonstrated in the candidate's sample below:
+"""
+${sampleStyle}
+"""
+` : ''}
 
 SOP STRUCTURE & GUIDELINES:
-1. Introduction: Hook expressing strong interest in ${programme.name} at ${programme.university}.
-2. Technical Background: Connect candidate's DevOps, Kubernetes, Cloud, and Security projects to academic readiness.
-3. Why this Programme: Mention specific coursework, labs, or research focus in ${programme.field}.
-4. Future Goals: Explain how this MSc supports long-term leadership in Cloud Architecture & Security.
-5. Tone: Intellectual, ambitious, polished academic tone (~500 - 700 words).
+1. Introduction: Compelling hook expressing profound interest in ${programme.name} at ${programme.university}.
+2. Academic Rigor & Research: Connect candidate's First Class academic background, undergraduate thesis, and technical systems to academic readiness.
+3. Industry & Systems Engineering: Detail practical cloud, DevOps, container orchestration, and real-world system resilience accomplishments.
+4. Why this Specific Programme: Mention specific coursework, labs, and research focus in ${programme.field}.
+5. Long-term Vision: Articulate how this MSc supports leading resilient infrastructure and contributing back to the global tech ecosystem.
+6. Tone: Intellectual, ambitious, grounded, polished academic tone (~600 - 800 words).
 
 Write the complete Statement of Purpose below:
 `;

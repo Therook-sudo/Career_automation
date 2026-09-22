@@ -41,6 +41,7 @@ bot.start((ctx) => {
     `📌 *Quick Commands*:\n` +
     `• /dashboard - View pipeline overview & stats\n` +
     `• /jobs - Browse jobs with AI Match Score (1-5 ⭐)\n` +
+    `• /fetch_jobs - Pull fresh jobs from Google Alerts RSS feeds\n` +
     `• /apply <job_id> - Tailor CV for a specific job\n` +
     `• /prep <job_id> - Generate STAR Method interview prep\n` +
     `• /answer <job_id> <q> - Generate portal form answer\n` +
@@ -49,6 +50,7 @@ bot.start((ctx) => {
     `• /scholarships - View fully-funded scholarships\n` +
     `• /checklist <school_id> - Generate AI application checklist\n` +
     `• /sop <school_id> - Generate Statement of Purpose (SOP)\n` +
+    `• /sop_sample <text> - Save your writing style guide\n` +
     `• /tasks - View active application tasks\n` +
     `• /help - Full command list`,
     { parse_mode: 'Markdown' }
@@ -61,7 +63,7 @@ bot.help((ctx) => {
     `🛠 *Pipeline Commands Reference*\n\n` +
     `*System A – Career Pipeline*:\n` +
     `• /jobs - Show recent DevOps jobs with 1-5⭐ score & skill gaps\n` +
-    `• /jobs_remote - Show remote-only job listings\n` +
+    `• /jobs refresh - Fetch fresh Google Alerts RSS feeds & show jobs\n` +
     `• /fetch_jobs - Run automated job scrapers now\n` +
     `• /check_liveness - Verify open job links & mark expired as closed\n` +
     `• /apply <job_id> - Tailor CV & create application record\n` +
@@ -74,7 +76,8 @@ bot.help((ctx) => {
     `• /scholarships - Show fully-funded scholarships\n` +
     `• /fetch_schools - Run school sourcing sweep\n` +
     `• /checklist <school_id> - Generate AI task checklist\n` +
-    `• /sop <school_id> - Generate Statement of Purpose (SOP)\n\n` +
+    `• /sop <school_id> - Generate Statement of Purpose (SOP)\n` +
+    `• /sop_sample <text> - Save your personal SOP writing style guide\n\n` +
     `*Unified Tools*:\n` +
     `• /dashboard - Live 7-day pipeline summary\n` +
     `• /tasks - Daily tasks & deadline checklist\n` +
@@ -148,10 +151,13 @@ bot.command('dashboard', async (ctx) => {
   }
 });
 
-// /jobs command with AI Match Score & Skill Gap
+// /jobs command with AI Match Score & Skill Gap (auto-fetches if database is empty or on /jobs refresh)
 bot.command('jobs', async (ctx) => {
+  const text = ctx.message.text.replace(/^\/jobs(@\w+)?(\s+|$)/i, '').trim().toLowerCase();
+  const shouldFetch = text === 'fetch' || text === 'refresh' || text === 'sync';
+
   try {
-    const { data: jobs, error } = await supabase
+    let { data: jobs, error } = await supabase
       .from('jobs')
       .select('*')
       .eq('status', 'open')
@@ -160,8 +166,24 @@ bot.command('jobs', async (ctx) => {
 
     if (error) throw error;
 
-    if (!jobs || jobs.length === 0) {
-      return ctx.reply('📭 No open jobs found in database yet. Use /fetch_jobs to trigger a sourcing sweep!');
+    // If database is empty or user requested refresh, automatically trigger the sourcing pipeline!
+    if (!jobs || jobs.length === 0 || shouldFetch) {
+      ctx.reply('🔍 *Sourcing fresh DevOps/Cloud roles from Google Alerts RSS & remote feeds...*', { parse_mode: 'Markdown' });
+      await runJobSourcingPipeline();
+      
+      const { data: freshJobs, error: freshErr } = await supabase
+        .from('jobs')
+        .select('*')
+        .eq('status', 'open')
+        .order('created_at', { ascending: false })
+        .limit(4);
+
+      if (freshErr) throw freshErr;
+      jobs = freshJobs;
+
+      if (!jobs || jobs.length === 0) {
+        return ctx.reply('📭 No open jobs found after sweep. Check your RSS feeds in `config/google_alerts.txt` or run /fetch_jobs again.');
+      }
     }
 
     ctx.reply('🧠 *Evaluating Job Match Scores & Skill Gaps with Gemini AI...*', { parse_mode: 'Markdown' });
@@ -171,7 +193,7 @@ bot.command('jobs', async (ctx) => {
     for (let i = 0; i < jobs.length; i++) {
       const job = jobs[i];
       let scoreStars = '⭐⭐⭐⭐';
-      let matchedStr = job.tech_stack_tags ? job.tech_stack_tags.join(', ') : 'DevOps';
+      let matchedStr = job.tech_stack_tags && job.tech_stack_tags.length > 0 ? job.tech_stack_tags.join(', ') : 'DevOps';
       let gapStr = 'None';
 
       try {
@@ -190,10 +212,11 @@ bot.command('jobs', async (ctx) => {
       message += `🔗 [Apply Link](${job.job_url})\n\n`;
     }
 
+    message += `💡 _Tip: Run \`/jobs refresh\` or \`/fetch_jobs\` to pull the newest RSS feeds anytime!_`;
     ctx.reply(message, { parse_mode: 'Markdown', link_preview_options: { is_disabled: true } });
   } catch (error: any) {
     console.error('Error fetching jobs:', error);
-    ctx.reply('⚠️ Failed to query jobs table.');
+    ctx.reply(`⚠️ Failed to query jobs: ${error.message || 'Database error'}`);
   }
 });
 
@@ -411,13 +434,28 @@ bot.command('checklist', async (ctx) => {
   }
 });
 
-// /sop <school_id> command
+// /sop <school_id> command (also aliases /sop sample <text>)
 bot.command('sop', async (ctx) => {
-  const parts = ctx.message.text.split(' ');
-  const schoolId = parts[1]?.trim();
+  const rawText = ctx.message.text.replace(/^\/sop(@\w+)?(\s+|$)/i, '').trim();
+  const parts = rawText.split(/\s+/);
+  const firstWord = parts[0]?.toLowerCase();
+
+  // If user typed "/sop sample ..." or "/sop style ...", route directly to SOP sample saver
+  if (firstWord === 'sample' || firstWord === 'style') {
+    const sampleText = rawText.replace(/^(sample|style)\s*/i, '').trim();
+    return handleSaveSopSample(ctx, sampleText);
+  }
+
+  const schoolId = parts[0]?.trim();
 
   if (!schoolId) {
-    return ctx.reply('⚠️ Usage: `/sop <school_id>`', { parse_mode: 'Markdown' });
+    return ctx.reply(
+      `✍️ *Statement of Purpose (SOP) Commands*:\n\n` +
+      `• \`/sop <school_id>\` - Generate an AI-tailored SOP for a specific MSc programme\n` +
+      `• \`/sop_sample <paste sample>\` - Save your personal writing style guide\n` +
+      `• \`/schools\` - View all tracked MSc programmes and their IDs`,
+      { parse_mode: 'Markdown' }
+    );
   }
 
   ctx.reply(`✍️ *Generating Tailored Statement of Purpose (SOP) for School ID:* \`${schoolId}\`...`, { parse_mode: 'Markdown' });
@@ -432,7 +470,7 @@ bot.command('sop', async (ctx) => {
     ctx.reply(message, { parse_mode: 'Markdown' });
   } catch (error: any) {
     console.error('SOP command error:', error);
-    ctx.reply(`⚠️ Error generating SOP: ${error.message}`);
+    ctx.reply(`⚠️ Error generating SOP: ${error.message || 'Invalid School ID or API error'}`);
   }
 });
 
@@ -491,36 +529,59 @@ bot.command('report', async (ctx) => {
   }
 });
 
-// /sop_sample command - Store sample SOP style text
-bot.command('sop_sample', async (ctx) => {
-  const parts = ctx.message.text.split(' ');
-  const sampleText = parts.slice(1).join(' ').trim();
-
+// Handler function for saving user's sample SOP style guide
+async function handleSaveSopSample(ctx: any, sampleText: string) {
   if (!sampleText) {
     return ctx.reply(
       `✍️ *Sample SOP Style Guide*\n\n` +
-      `Usage: \`/sop_sample <paste your writing style or sample SOP text>\`\n\n` +
-      `Example: \`/sop_sample My passion for cloud native systems started when...\``,
+      `Usage: \`/sop_sample <paste your writing style or sample SOP text>\`\n` +
+      `Or: \`/sop sample <paste your writing style>\`\n\n` +
+      `Example: \`/sop_sample Growing up in Lagos, Nigeria, witnessing digital infrastructure break...\``,
       { parse_mode: 'Markdown' }
     );
   }
 
-  const { data: profile } = await supabase.from('user_profile').select('*').limit(1).single();
+  try {
+    const { data: profiles, error: selectErr } = await supabase.from('user_profile').select('*').limit(1);
+    if (selectErr) throw selectErr;
+    const profile = profiles && profiles.length > 0 ? profiles[0] : null;
 
-  if (profile) {
-    const existingParsed = profile.parsed_json || {};
-    await supabase.from('user_profile').update({
-      parsed_json: { ...existingParsed, sop_sample: sampleText }
-    }).eq('id', profile.id);
-  } else {
-    await supabase.from('user_profile').insert({
-      full_name: 'DevOps Candidate',
-      headline: 'DevOps & Cloud Engineer',
-      parsed_json: { sop_sample: sampleText }
-    });
+    if (profile) {
+      const existingParsed = profile.parsed_json || {};
+      const { error: updateErr } = await supabase.from('user_profile').update({
+        parsed_json: { ...existingParsed, sop_sample: sampleText },
+        updated_at: new Date().toISOString()
+      }).eq('id', profile.id);
+      if (updateErr) throw updateErr;
+    } else {
+      const { error: insertErr } = await supabase.from('user_profile').insert({
+        full_name: 'Chukwuemeka Abiodun Ezeliora',
+        headline: 'Computer Scientist & Cloud Systems Engineer',
+        parsed_json: { sop_sample: sampleText }
+      });
+      if (insertErr) throw insertErr;
+    }
+
+    ctx.reply(
+      `✅ *Sample SOP Style Guide Saved!*\n\n` +
+      `Gemini AI will now use your authentic personal voice, paragraph structure, and narrative cadence whenever generating Statement of Purpose drafts via \`/sop <school_id>\`.`,
+      { parse_mode: 'Markdown' }
+    );
+  } catch (err: any) {
+    console.error('Error saving SOP sample:', err);
+    ctx.reply(`⚠️ Error saving SOP sample: ${err.message || 'Database connection error'}`);
   }
+}
 
-  ctx.reply('✅ *Sample SOP Style Guide Saved!* Gemini AI will use this style whenever generating Statement of Purpose drafts.', { parse_mode: 'Markdown' });
+// /sop_sample and /sopsample commands - Store sample SOP style text
+bot.command('sop_sample', async (ctx) => {
+  const sampleText = ctx.message.text.replace(/^\/sop_sample(@\w+)?(\s+|$)/i, '').trim();
+  return handleSaveSopSample(ctx, sampleText);
+});
+
+bot.command('sopsample', async (ctx) => {
+  const sampleText = ctx.message.text.replace(/^\/sopsample(@\w+)?(\s+|$)/i, '').trim();
+  return handleSaveSopSample(ctx, sampleText);
 });
 
 // Text message listener for direct CV text pastes
